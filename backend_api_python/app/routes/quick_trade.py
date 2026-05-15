@@ -261,24 +261,63 @@ def _load_credential(credential_id: int, user_id: int) -> Dict[str, Any]:
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
-            "SELECT encrypted_config FROM qd_exchange_credentials WHERE id = %s AND user_id = %s",
+            """
+            SELECT exchange_id AS row_exchange_id, encrypted_config
+            FROM qd_exchange_credentials
+            WHERE id = %s AND user_id = %s
+            """,
             (int(credential_id), int(user_id)),
         )
-        row = cur.fetchone() or {}
+        db_row = cur.fetchone()
         cur.close()
+    if not db_row:
+        logger.warning(
+            "credential load: no row for id=%s user_id=%s (wrong account, stale client selection, or deleted)",
+            credential_id,
+            user_id,
+        )
+        return {}
+    row = db_row if isinstance(db_row, dict) else {}
+    rex = ""
+    try:
+        rex = str(row.get("row_exchange_id") or "").strip().lower()
+    except Exception:
+        rex = ""
     try:
         plain = decrypt_credential_blob(row.get("encrypted_config"))
     except ValueError as e:
         logger.warning(f"decrypt credential_id={credential_id}: {e}")
         return {}
-    return _safe_json(plain, {})
+    cfg = _safe_json(plain, {})
+    if cfg is None or (isinstance(cfg, dict) and not cfg):
+        logger.warning(
+            "credential load: decrypted JSON empty or invalid for id=%s user_id=%s",
+            credential_id,
+            user_id,
+        )
+        return {}
+    if isinstance(cfg, dict) and rex:
+        # Prefer DB row exchange_id — some legacy blobs omit it so create_client falls through wrongly.
+        old = str(cfg.get("exchange_id") or "").strip().lower()
+        if old != rex:
+            logger.info(
+                "credential id=%s: normalizing exchange_id %r -> %r (DB column wins)",
+                credential_id,
+                old or "",
+                rex,
+            )
+        cfg["exchange_id"] = rex
+    return cfg
 
 
 def _build_exchange_config(credential_id: int, user_id: int, overrides: Dict[str, Any] = None) -> Dict[str, Any]:
     """Build exchange config from saved credential + overrides."""
     base = _load_credential(credential_id, user_id)
     if not base:
-        raise ValueError("Credential not found or access denied")
+        raise ValueError(
+            "Credential not found or cannot be decrypted. "
+            "If you switched accounts, re-select API Key / 請重新選擇已保存的 API Key."
+        )
     if overrides:
         for k, v in overrides.items():
             if v is not None and (not isinstance(v, str) or v.strip()):
@@ -762,6 +801,28 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
             return result
 
         if isinstance(raw, dict):
+            # Coinbase Advanced Trade: { accounts: [ { currency, available_balance: {value}, hold: {value} } ] }
+            if ex0 == "coinbaseexchange":
+                accounts = raw.get("accounts")
+                if isinstance(accounts, list):
+                    for a in accounts:
+                        if not isinstance(a, dict):
+                            continue
+                        if str(a.get("currency") or "").upper() != "USDT":
+                            continue
+
+                        def _cb_money(obj: Any) -> float:
+                            if isinstance(obj, dict):
+                                return _num(obj.get("value"))
+                            return _num(obj)
+
+                        avail = _cb_money(a.get("available_balance"))
+                        hold_v = _cb_money(a.get("hold"))
+                        tot_obj = a.get("balance") or a.get("total_balance")
+                        total = _cb_money(tot_obj) if tot_obj else avail + hold_v
+                        result["available"] = avail
+                        result["total"] = total if total > 0 else avail + hold_v
+                        return result
             # Binance futures
             if "availableBalance" in raw:
                 result["available"] = float(raw.get("availableBalance") or 0)

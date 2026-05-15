@@ -218,12 +218,15 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
             hedge_mode=hedge_mode,
         )
 
-    if exchange_id in ("coinbaseexchange", "coinbase_exchange"):
-        default_cb = "https://api-public.sandbox.exchange.coinbase.com" if is_demo else "https://api.exchange.coinbase.com"
-        base_url = _get(exchange_config, "base_url", "baseUrl") or default_cb
+    if exchange_id in ("coinbaseexchange", "coinbase_exchange", "coinbase"):
+        if not api_key:
+            api_key = _get(exchange_config, "api_key_name", "cdp_api_key_name", "key_name", "keyName")
+        if not secret_key:
+            secret_key = _get(exchange_config, "private_key", "privateKey", "pem")
         if mt != "spot":
-            raise LiveTradingError("CoinbaseExchange only supports spot market_type in this project")
-        return CoinbaseExchangeClient(api_key=api_key, secret_key=secret_key, passphrase=passphrase, base_url=base_url)
+            raise LiveTradingError("Coinbase (Advanced Trade) only supports spot market_type in this project")
+        # CDP keys: api_key = key name/id, secret_key = EC private key (PEM or one-line base64). Passphrase unused.
+        return CoinbaseExchangeClient(api_key=api_key, secret_key=secret_key, passphrase=passphrase)
 
     if exchange_id == "kraken":
         base_url = _get(exchange_config, "base_url", "baseUrl") or "https://api.kraken.com"

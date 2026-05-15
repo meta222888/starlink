@@ -23,6 +23,7 @@ from app.services.broker_market_policy import (
     is_compatible_credential,
     is_long_only_broker,
     list_supported_brokers_for_market,
+    resolve_market_type,
     to_dict,
     validate_strategy_config,
 )
@@ -95,6 +96,21 @@ class TestHelpers:
         assert "alpaca" in usstock_brokers
         assert "binance" not in usstock_brokers
         assert list_supported_brokers_for_market("Forex") == {"mt5"}
+
+
+class TestResolveMarketType:
+    def test_coinbase_swap_coerced_to_spot(self):
+        assert resolve_market_type("coinbaseexchange", "Crypto", "swap") == "spot"
+
+    def test_alpaca_crypto_swap_coerced_to_spot(self):
+        assert resolve_market_type("alpaca", "Crypto", "swap") == "spot"
+
+    def test_binance_defaults_to_swap(self):
+        assert resolve_market_type("binance", "Crypto", None) == "swap"
+        assert resolve_market_type("binance", "Crypto", "") == "swap"
+
+    def test_binance_explicit_spot_preserved(self):
+        assert resolve_market_type("binance", "Crypto", "spot") == "spot"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +248,7 @@ class TestValidateIllegalCombos:
         assert "Binance/OKX/Bybit" in msg
 
     def test_coinbase_crypto_swap_rejected(self):
-        with pytest.raises(ValueError, match="does not support market_type='swap'"):
+        with pytest.raises(ValueError, match="Coinbase Exchange is spot-only"):
             validate_strategy_config(
                 exchange_id="coinbaseexchange",
                 market_category="Crypto",

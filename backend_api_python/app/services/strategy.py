@@ -165,16 +165,24 @@ class StrategyService:
                     return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
 
                 if ex in ("coinbaseexchange", "coinbase_exchange"):
-                    base = str(exchange_config.get("base_url") or exchange_config.get("baseUrl") or "https://api.exchange.coinbase.com").rstrip("/")
-                    j = _req_json(f"{base}/products")
-                    if isinstance(j, list):
-                        for it in j:
+                    # Advanced Trade public catalog (no legacy Exchange API access required).
+                    j = _req_json(
+                        "https://api.coinbase.com/api/v3/brokerage/market/products"
+                        "?limit=500&product_type=SPOT"
+                    )
+                    products = j.get("products") if isinstance(j, dict) else None
+                    if isinstance(products, list):
+                        for it in products:
                             if not isinstance(it, dict):
                                 continue
-                            if str(it.get("status") or "").lower() not in ("online", ""):
+                            pid = str(it.get("product_id") or "")
+                            if not pid or "-" not in pid:
                                 continue
-                            base_ccy = str(it.get("base_currency") or "").upper()
-                            quote_ccy = str(it.get("quote_currency") or "").upper()
+                            parts = pid.split("-")
+                            if len(parts) < 2:
+                                continue
+                            quote_ccy = parts[-1].upper()
+                            base_ccy = parts[0].upper()
                             if quote_ccy == "USDT" and base_ccy:
                                 symbols.append(f"{base_ccy}/USDT")
                     symbols = sorted(list(set(symbols)))
@@ -1009,8 +1017,21 @@ class StrategyService:
         # single unit through the centralized policy (broker_market_policy.py).
         # That module is the single source of truth — adding a new broker or
         # tightening a rule should only need a change in one place.
-        from app.services.broker_market_policy import validate_strategy_config
+        from app.services.broker_market_policy import (
+            resolve_market_type,
+            validate_strategy_config,
+        )
         exchange_id = (resolved_ex_cfg.get('exchange_id') or '').strip().lower() if isinstance(resolved_ex_cfg, dict) else ''
+        if isinstance(trading_config, dict):
+            _raw_mt = trading_config.get('market_type')
+            _resolved_mt = resolve_market_type(exchange_id, market_category, _raw_mt)
+            if _resolved_mt and _resolved_mt != _raw_mt:
+                if _raw_mt:
+                    logger.info(
+                        "create_strategy: coerced market_type %r -> %r for %s + %s",
+                        _raw_mt, _resolved_mt, exchange_id, market_category,
+                    )
+                trading_config['market_type'] = _resolved_mt
         validate_strategy_config(
             exchange_id=exchange_id,
             market_category=market_category,
@@ -1144,11 +1165,20 @@ class StrategyService:
         batch_trading_config = payload.get('trading_config') if isinstance(payload.get('trading_config'), dict) else {}
         batch_execution_mode = (payload.get('execution_mode') or 'signal').strip().lower()
         from app.services.exchange_execution import resolve_exchange_config as _resolve_ex
-        from app.services.broker_market_policy import validate_strategy_config as _validate_policy
+        from app.services.broker_market_policy import (
+            resolve_market_type as _resolve_market_type_bc,
+            validate_strategy_config as _validate_policy,
+        )
 
         uid_bc = int(payload.get('user_id') or 1)
         _resolved_bc = _resolve_ex(exchange_config if isinstance(exchange_config, dict) else {}, user_id=uid_bc)
         exchange_id = (_resolved_bc.get('exchange_id') or '').strip().lower() if isinstance(_resolved_bc, dict) else ''
+        if batch_trading_config:
+            _raw_mt_bc = batch_trading_config.get('market_type')
+            _resolved_mt_bc = _resolve_market_type_bc(exchange_id, market_category, _raw_mt_bc)
+            if _resolved_mt_bc and _resolved_mt_bc != _raw_mt_bc:
+                batch_trading_config['market_type'] = _resolved_mt_bc
+                payload['trading_config'] = batch_trading_config
         _validate_policy(
             exchange_id=exchange_id,
             market_category=market_category,
@@ -1365,7 +1395,20 @@ class StrategyService:
         # Resolve effective execution_mode (payload may override existing).
         _upd_exec_mode = ((payload.get('execution_mode') if payload.get('execution_mode') is not None
                            else existing.get('execution_mode')) or 'signal').strip().lower()
-        from app.services.broker_market_policy import validate_strategy_config as _validate_policy_upd
+        from app.services.broker_market_policy import (
+            resolve_market_type as _resolve_market_type_upd,
+            validate_strategy_config as _validate_policy_upd,
+        )
+        if isinstance(trading_config, dict):
+            _eff_mt = trading_config.get('market_type') or existing.get('market_type')
+            _resolved_mt_upd = _resolve_market_type_upd(ex_id, market_category, _eff_mt)
+            if _resolved_mt_upd and _resolved_mt_upd != _eff_mt:
+                if _eff_mt:
+                    logger.info(
+                        "update_strategy: coerced market_type %r -> %r for %s + %s",
+                        _eff_mt, _resolved_mt_upd, ex_id, market_category,
+                    )
+                trading_config['market_type'] = _resolved_mt_upd
         _validate_policy_upd(
             exchange_id=ex_id,
             market_category=market_category,

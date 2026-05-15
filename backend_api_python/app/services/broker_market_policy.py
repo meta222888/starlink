@@ -136,6 +136,36 @@ def is_long_only_broker(exchange_id: str) -> bool:
     return _norm_exchange(exchange_id) in LONG_ONLY_BROKERS
 
 
+def resolve_market_type(
+    exchange_id: Optional[str],
+    market_category: Optional[str],
+    market_type: Optional[str],
+) -> Optional[str]:
+    """Pick a valid market_type for (broker, market), coercing common UI defaults.
+
+    Clients often default crypto strategies to ``swap``. Spot-only brokers
+    (Coinbase Exchange, Alpaca crypto) only allow ``spot`` — when there is a
+    single allowed value we always return it so create/update succeeds.
+    """
+    ex = _norm_exchange(exchange_id)
+    mc = (market_category or "").strip()
+    mt = _norm_market_type(market_type)
+    if not ex or not mc:
+        return mt or (market_type.strip().lower() if isinstance(market_type, str) and market_type.strip() else None)
+
+    allowed = allowed_market_types(ex, mc)
+    if not allowed:
+        return mt or None
+
+    if len(allowed) == 1:
+        return next(iter(allowed))
+
+    if not mt:
+        return "swap" if "swap" in allowed else next(iter(allowed))
+
+    return mt if mt in allowed else mt
+
+
 def list_supported_brokers_for_market(market_category: str) -> Set[str]:
     """Return the set of exchange_ids that can serve this market."""
     return {ex for ex, markets in BROKER_MARKETS.items()
@@ -228,6 +258,12 @@ def validate_strategy_config(
                     "product). Got market_type='swap'. Set market_type='spot', "
                     "or to trade crypto perpetuals use Binance/OKX/Bybit/"
                     "Bitget with market_type='swap'."
+                )
+            if ex == "coinbaseexchange" and mc == "Crypto" and mt == "swap":
+                raise ValueError(
+                    "Coinbase Exchange is spot-only in QuantDinger (no perpetual "
+                    "contracts). Got market_type='swap'. Set market_type='spot', "
+                    "or use Binance/OKX/Bybit/Bitget for crypto perpetuals."
                 )
             raise ValueError(
                 f"{ex.upper()} + {mc} does not support market_type='{mt}'. "

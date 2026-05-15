@@ -212,9 +212,17 @@ def create_credential():
             })
             hint = f"{mt5_server}/{mt5_login}"
         elif exchange_id in CRYPTO_EXCHANGES:
-            # Crypto exchanges
-            api_key = (data.get('api_key') or '').strip()
-            secret_key = (data.get('secret_key') or '').strip()
+            # Crypto exchanges — accept camelCase / CDP synonyms (mobile / third-party tooling).
+            api_key = (
+                data.get('api_key') or data.get('apiKey') or data.get('api_key_name') or data.get('apiKeyName') or ''
+            ).strip()
+            secret_key = (
+                data.get('secret_key')
+                or data.get('secretKey')
+                or data.get('private_key')
+                or data.get('privateKey')
+                or ''
+            ).strip()
             if not api_key or not secret_key:
                 return jsonify({'code': 0, 'msg': 'Missing api_key/secret_key', 'data': None}), 400
             config.update({

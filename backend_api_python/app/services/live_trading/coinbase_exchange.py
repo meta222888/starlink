@@ -1,121 +1,239 @@
 """
-Coinbase Exchange (legacy, direct REST) client.
+Coinbase (Advanced Trade + CDP API keys).
 
-Auth headers:
-- CB-ACCESS-KEY
-- CB-ACCESS-SIGN = base64(hmac_sha256(base64_decode(secret), timestamp + method + request_path + body))
-- CB-ACCESS-TIMESTAMP (seconds)
-- CB-ACCESS-PASSPHRASE
+Uses REST `api.coinbase.com/api/v3/brokerage/...` with Bearer JWT (ES256),
+not the legacy Coinbase Exchange HMAC (api.exchange.coinbase.com).
+
+Stored credentials (same DB fields as other exchanges):
+- api_key: CDP API key *name* / id (shown in Developer Platform)
+- secret_key: EC private key (PEM or one-line base64 PKCS#8)
+- passphrase: unused (optional empty)
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import time
+import logging
+import uuid
 from typing import Any, Dict, Optional
 
+import requests
+
+from app.services.live_trading import base as live_base
 from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.services.live_trading.coinbase_cdp_auth import (
+    API_PREFIX,
+    CB_REST_HOST,
+    build_rest_jwt,
+    format_jwt_uri,
+    normalize_cdp_private_key,
+)
 from app.services.live_trading.symbols import to_coinbase_product_id
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_order_id(raw: Dict[str, Any]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    sr = raw.get("success_response") or raw.get("successResponse")
+    if isinstance(sr, dict):
+        inner = sr.get("order") if isinstance(sr.get("order"), dict) else sr
+        if isinstance(inner, dict):
+            oid = inner.get("order_id") or inner.get("orderId")
+            if oid:
+                return str(oid)
+    return str(raw.get("order_id") or raw.get("orderId") or "")
+
+
+def _normalize_order_for_wait(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Map Advanced Trade order fields to keys used by pending_order_worker.wait loops."""
+    if not isinstance(raw, dict):
+        return {}
+    out = dict(raw)
+    # Filled base size
+    fs = raw.get("filled_size") or raw.get("filled_quantity")
+    if fs is None and isinstance(raw.get("filled_value"), dict):
+        fs = raw.get("filled_size")
+    out.setdefault("filled_size", fs)
+    # Executed notional (for avg price)
+    ev = raw.get("total_value_after_fees") or raw.get("filled_value") or raw.get("average_filled_price")
+    if isinstance(ev, dict):
+        ev = ev.get("value")
+    if ev is not None:
+        out.setdefault("executed_value", ev)
+    else:
+        try:
+            avg = float(raw.get("average_filled_price") or 0)
+            fs2 = float(out.get("filled_size") or 0)
+            if avg > 0 and fs2 > 0:
+                out.setdefault("executed_value", avg * fs2)
+        except Exception:
+            pass
+    fee = raw.get("total_fees") or raw.get("fee")
+    if isinstance(fee, dict):
+        fee = fee.get("value")
+    if fee is not None:
+        out.setdefault("fill_fees", fee)
+    return out
 
 
 class CoinbaseExchangeClient(BaseRestClient):
+    """
+    Spot trading via Coinbase Advanced Trade API (retail/brokerage CDP keys).
+    """
+
     def __init__(
         self,
         *,
         api_key: str,
         secret_key: str,
-        passphrase: str,
-        base_url: str = "https://api.exchange.coinbase.com",
+        passphrase: str = "",
+        base_url: str = "",
         timeout_sec: float = 15.0,
     ):
-        super().__init__(base_url=base_url, timeout_sec=timeout_sec)
+        # Legacy arg `base_url` (exchange.coinbase.com) is ignored — Advanced Trade is fixed host.
+        super().__init__(base_url=f"https://{CB_REST_HOST}", timeout_sec=timeout_sec)
         self.api_key = (api_key or "").strip()
-        self.secret_key = (secret_key or "").strip()
-        self.passphrase = (passphrase or "").strip()
-        if not self.api_key or not self.secret_key or not self.passphrase:
-            raise LiveTradingError("Missing CoinbaseExchange api_key/secret_key/passphrase")
-
+        self._secret_pem = ""
+        if not self.api_key:
+            raise LiveTradingError("Missing Coinbase CDP API key id (api_key)")
         try:
-            self._secret_bytes = base64.b64decode(self.secret_key)
+            self._secret_pem = normalize_cdp_private_key(secret_key)
+        except LiveTradingError:
+            raise
         except Exception as e:
-            raise LiveTradingError(f"Invalid CoinbaseExchange secret_key (base64 decode failed): {e}")
+            raise LiveTradingError(f"Invalid Coinbase CDP private key: {e}") from e
 
-    def _sign(self, message: str) -> str:
-        mac = hmac.new(self._secret_bytes, message.encode("utf-8"), hashlib.sha256).digest()
-        return base64.b64encode(mac).decode("utf-8")
+    def _jwt_for(self, method: str, path: str) -> str:
+        uri = format_jwt_uri(method, path)
+        return build_rest_jwt(uri=uri, api_key=self.api_key, secret_pem=self._secret_pem)
 
-    def _headers(self, ts: str, sign: str) -> Dict[str, str]:
-        return {
-            "CB-ACCESS-KEY": self.api_key,
-            "CB-ACCESS-SIGN": sign,
-            "CB-ACCESS-TIMESTAMP": ts,
-            "CB-ACCESS-PASSPHRASE": self.passphrase,
+    def _brokerage_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        p = path if path.startswith("/") else f"/{path}"
+        token = self._jwt_for(method, p)
+        url = f"https://{CB_REST_HOST}{p}"
+        headers = {
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "User-Agent": "QuantDinger/CoinbaseAdvancedTrade",
         }
-
-    def _signed_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None) -> Any:
-        m = str(method or "GET").upper()
-        ts = str(int(time.time()))
-        body_str = self._json_dumps(json_body) if json_body is not None else ""
-        # Coinbase expects request_path to include query string for signature when GET params exist.
-        # We keep signature aligned with actual request params by relying on requests to encode params,
-        # but include them in the prehash in a stable order.
-        signed_path = path
-        if params:
-            # stable ordering
-            items = []
-            for k in sorted(params.keys()):
-                v = params.get(k)
-                if v is None:
-                    continue
-                items.append(f"{k}={v}")
-            if items:
-                signed_path = f"{path}?{'&'.join(items)}"
-        prehash = f"{ts}{m}{signed_path}{body_str}"
-        sign = self._sign(prehash)
-        code, data, text = self._request(m, path, params=params, data=body_str if body_str else None, headers=self._headers(ts, sign))
-        if code >= 400:
-            raise LiveTradingError(f"CoinbaseExchange HTTP {code}: {text[:500]}")
-        return data
-
-    def _public_request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None) -> Any:
-        code, data, text = self._request(method, path, params=params, headers=None, json_body=None, data=None)
-        if code >= 400:
-            raise LiveTradingError(f"CoinbaseExchange HTTP {code}: {text[:500]}")
-        return data
+        try:
+            resp = requests.request(
+                str(method or "GET").upper(),
+                url,
+                params=params or None,
+                json=json_body if json_body is not None else None,
+                headers=headers,
+                timeout=self.timeout_sec,
+                verify=live_base._get_requests_verify(),
+            )
+        except UnicodeEncodeError as e:
+            raise LiveTradingError(
+                "Auth failed: non-ASCII characters in Coinbase credentials or headers cannot be encoded. "
+                f"{e}"
+            ) from e
+        text = resp.text or ""
+        parsed: Dict[str, Any] = {}
+        try:
+            parsed = resp.json() if text else {}
+        except Exception:
+            parsed = {"raw_text": text[:2000]}
+        if resp.status_code >= 400:
+            err = parsed.get("message") or parsed.get("error") or text[:500]
+            raise LiveTradingError(f"Coinbase Advanced Trade HTTP {resp.status_code}: {err}")
+        if isinstance(parsed, dict) and parsed.get("error"):
+            raise LiveTradingError(f"Coinbase Advanced Trade error: {parsed.get('error')}")
+        return parsed
 
     def ping(self) -> bool:
         try:
-            _ = self._public_request("GET", "/time")
-            return True
+            r = requests.get(
+                f"https://{CB_REST_HOST}{API_PREFIX}/time",
+                timeout=min(10.0, self.timeout_sec),
+                verify=live_base._get_requests_verify(),
+            )
+            return r.status_code == 200
         except Exception:
             return False
 
     def get_accounts(self) -> Any:
-        return self._signed_request("GET", "/accounts")
+        return self._brokerage_request("GET", f"{API_PREFIX}/accounts", params={"limit": 250})
 
-    def place_market_order(self, *, symbol: str, side: str, size: float, client_order_id: Optional[str] = None) -> LiveOrderResult:
+    def _best_ask_mid(self, product_id: str) -> float:
+        raw = self._brokerage_request(
+            "GET",
+            f"{API_PREFIX}/best_bid_ask",
+            params={"product_ids": product_id},
+        )
+        pricebooks = raw.get("pricebooks") if isinstance(raw, dict) else None
+        if not isinstance(pricebooks, list) or not pricebooks:
+            raise LiveTradingError(f"No best_bid_ask for {product_id}")
+        book = pricebooks[0] if isinstance(pricebooks[0], dict) else {}
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        try:
+            bid = float(bids[0].get("price") if bids and isinstance(bids[0], dict) else 0)
+            ask = float(asks[0].get("price") if asks and isinstance(asks[0], dict) else 0)
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2.0
+            return ask or bid
+        except Exception as e:
+            raise LiveTradingError(f"best_bid_ask parse failed for {product_id}: {e}") from e
+
+    def place_market_order(
+        self, *, symbol: str, side: str, size: float, client_order_id: Optional[str] = None
+    ) -> LiveOrderResult:
         sd = (side or "").strip().lower()
         if sd not in ("buy", "sell"):
             raise LiveTradingError(f"Invalid side: {side}")
         qty = float(size or 0.0)
         if qty <= 0:
             raise LiveTradingError("Invalid size")
-        body: Dict[str, Any] = {
-            "product_id": to_coinbase_product_id(symbol),
-            "side": sd,
-            "type": "market",
-            "size": str(qty),
-        }
-        if client_order_id:
-            body["client_oid"] = str(client_order_id)
-        raw = self._signed_request("POST", "/orders", json_body=body)
-        oid = str(raw.get("id") or raw.get("order_id") or raw.get("client_oid") or "")
-        return LiveOrderResult(exchange_id="coinbaseexchange", exchange_order_id=oid, filled=0.0, avg_price=0.0, raw=raw if isinstance(raw, dict) else {"raw": raw})
+        product_id = to_coinbase_product_id(symbol)
+        coi = (client_order_id or "").strip() or uuid.uuid4().hex
+        side_key = "BUY" if sd == "buy" else "SELL"
+        ioc: Dict[str, str] = {}
+        if sd == "buy":
+            mid = self._best_ask_mid(product_id)
+            quote = mid * qty
+            if quote <= 0:
+                raise LiveTradingError("Could not compute quote_size for market buy")
+            ioc["quote_size"] = f"{quote:.8f}".rstrip("0").rstrip(".")
+        else:
+            ioc["base_size"] = f"{qty:.8f}".rstrip("0").rstrip(".")
 
-    def place_limit_order(self, *, symbol: str, side: str, size: float, price: float, client_order_id: Optional[str] = None) -> LiveOrderResult:
+        body = {
+            "client_order_id": coi,
+            "product_id": product_id,
+            "side": side_key,
+            "order_configuration": {"market_market_ioc": ioc},
+        }
+        raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
+        oid = _extract_order_id(raw if isinstance(raw, dict) else {})
+        return LiveOrderResult(
+            exchange_id="coinbaseexchange",
+            exchange_order_id=oid,
+            filled=0.0,
+            avg_price=0.0,
+            raw=raw if isinstance(raw, dict) else {"raw": raw},
+        )
+
+    def place_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        price: float,
+        client_order_id: Optional[str] = None,
+    ) -> LiveOrderResult:
         sd = (side or "").strip().lower()
         if sd not in ("buy", "sell"):
             raise LiveTradingError(f"Invalid side: {side}")
@@ -123,33 +241,71 @@ class CoinbaseExchangeClient(BaseRestClient):
         px = float(price or 0.0)
         if qty <= 0 or px <= 0:
             raise LiveTradingError("Invalid size/price")
-        body: Dict[str, Any] = {
-            "product_id": to_coinbase_product_id(symbol),
-            "side": sd,
-            "type": "limit",
-            "price": str(px),
-            "size": str(qty),
-            "time_in_force": "GTC",
+        product_id = to_coinbase_product_id(symbol)
+        coi = (client_order_id or "").strip() or uuid.uuid4().hex
+        side_key = "BUY" if sd == "buy" else "SELL"
+        body = {
+            "client_order_id": coi,
+            "product_id": product_id,
+            "side": side_key,
+            "order_configuration": {
+                "limit_limit_gtc": {
+                    "base_size": f"{qty:.8f}".rstrip("0").rstrip("."),
+                    "limit_price": f"{px:.8f}".rstrip("0").rstrip("."),
+                    "post_only": False,
+                }
+            },
         }
-        if client_order_id:
-            body["client_oid"] = str(client_order_id)
-        raw = self._signed_request("POST", "/orders", json_body=body)
-        oid = str(raw.get("id") or raw.get("order_id") or raw.get("client_oid") or "")
-        return LiveOrderResult(exchange_id="coinbaseexchange", exchange_order_id=oid, filled=0.0, avg_price=0.0, raw=raw if isinstance(raw, dict) else {"raw": raw})
+        raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
+        oid = _extract_order_id(raw if isinstance(raw, dict) else {})
+        return LiveOrderResult(
+            exchange_id="coinbaseexchange",
+            exchange_order_id=oid,
+            filled=0.0,
+            avg_price=0.0,
+            raw=raw if isinstance(raw, dict) else {"raw": raw},
+        )
 
     def cancel_order(self, *, order_id: str = "", client_order_id: str = "") -> Any:
         if order_id:
-            return self._signed_request("DELETE", f"/orders/{str(order_id)}")
+            return self._brokerage_request(
+                "POST",
+                f"{API_PREFIX}/orders/batch_cancel",
+                json_body={"order_ids": [str(order_id)]},
+            )
         if client_order_id:
-            return self._signed_request("DELETE", f"/orders/client:{str(client_order_id)}")
-        raise LiveTradingError("CoinbaseExchange cancel_order requires order_id or client_order_id")
+            # Resolve client id -> exchange order id (best effort).
+            o = self.get_order(order_id="", client_order_id=str(client_order_id))
+            oid = ""
+            if isinstance(o, dict):
+                oid = str(o.get("order_id") or o.get("orderId") or "")
+            if oid:
+                return self.cancel_order(order_id=oid)
+            raise LiveTradingError("Could not resolve client_order_id to cancel on Coinbase Advanced Trade")
+        raise LiveTradingError("Coinbase cancel_order requires order_id or client_order_id")
 
     def get_order(self, *, order_id: str = "", client_order_id: str = "") -> Any:
         if order_id:
-            return self._signed_request("GET", f"/orders/{str(order_id)}")
+            raw = self._brokerage_request("GET", f"{API_PREFIX}/orders/historical/{order_id}")
+            if isinstance(raw, dict) and isinstance(raw.get("order"), dict):
+                raw = raw["order"]
+            return _normalize_order_for_wait(raw) if isinstance(raw, dict) else raw
         if client_order_id:
-            return self._signed_request("GET", f"/orders/client:{str(client_order_id)}")
-        raise LiveTradingError("CoinbaseExchange get_order requires order_id or client_order_id")
+            # Historical batch returns recent orders; scan for matching client_order_id.
+            raw = self._brokerage_request(
+                "GET",
+                f"{API_PREFIX}/orders/historical/batch",
+                params={"limit": 100},
+            )
+            orders = raw.get("orders") if isinstance(raw, dict) else None
+            if isinstance(orders, list):
+                for item in orders:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("client_order_id") or "") == str(client_order_id):
+                        return _normalize_order_for_wait(item)
+            raise LiveTradingError("Coinbase Advanced Trade: client_order_id not found in recent orders")
+        raise LiveTradingError("Coinbase get_order requires order_id or client_order_id")
 
     def wait_for_fill(
         self,
@@ -159,13 +315,15 @@ class CoinbaseExchangeClient(BaseRestClient):
         max_wait_sec: float = 10.0,
         poll_interval_sec: float = 0.5,
     ) -> Dict[str, Any]:
-        end_ts = time.time() + float(max_wait_sec or 0.0)
+        import time as _t
+
+        end_ts = _t.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
         while True:
-            timed_out = time.time() >= end_ts
+            timed_out = _t.time() >= end_ts
             try:
                 resp = self.get_order(order_id=str(order_id or ""), client_order_id=str(client_order_id or ""))
-                last = resp if isinstance(resp, dict) else {"raw": resp}
+                last = _normalize_order_for_wait(resp) if isinstance(resp, dict) else {"raw": resp}
             except Exception:
                 last = last or {}
             status = str(last.get("status") or "")
@@ -183,26 +341,23 @@ class CoinbaseExchangeClient(BaseRestClient):
                     avg_price = executed_value / filled
             except Exception:
                 avg_price = 0.0
-            # Extract fee from fill_fees (Coinbase API field)
             try:
-                fee = abs(float(last.get("fill_fees") or 0.0))
+                fee = abs(float(last.get("fill_fees") or last.get("total_fees") or 0.0))
             except Exception:
                 fee = 0.0
-            # Coinbase fees are typically in the quote currency (e.g., USD)
             if fee > 0:
                 fee_ccy = "USD"
+
+            st = status.lower()
+            terminal = st in ("filled", "done", "cancelled", "canceled", "rejected", "expired", "failed")
+
             if filled > 0 and avg_price > 0:
                 if fee <= 0 and not timed_out:
-                    time.sleep(float(poll_interval_sec or 0.5))
+                    _t.sleep(float(poll_interval_sec or 0.5))
                     continue
                 return {"filled": filled, "avg_price": avg_price, "fee": fee, "fee_ccy": fee_ccy, "status": status, "order": last}
-            if status.lower() in ("done", "rejected", "canceled", "cancelled"):
-                if fee <= 0 and filled > 0 and avg_price > 0 and not timed_out:
-                    time.sleep(float(poll_interval_sec or 0.5))
-                    continue
+            if terminal:
                 return {"filled": filled, "avg_price": avg_price, "fee": fee, "fee_ccy": fee_ccy, "status": status, "order": last}
             if timed_out:
                 return {"filled": filled, "avg_price": avg_price, "fee": fee, "fee_ccy": fee_ccy, "status": status, "order": last}
-            time.sleep(float(poll_interval_sec or 0.5))
-
-
+            _t.sleep(float(poll_interval_sec or 0.5))
