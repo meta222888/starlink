@@ -53,6 +53,23 @@ def _coinbase_response_summary(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _coinbase_order_reject_message(raw: Dict[str, Any]) -> str:
+    if not isinstance(raw, dict):
+        return "order rejected"
+    er = raw.get("error_response") or raw.get("errorResponse") or {}
+    er_msg = er.get("message") if isinstance(er, dict) else None
+    er_code = er.get("error") if isinstance(er, dict) else None
+    msg = raw.get("message") or er_msg or raw.get("error") or er_code
+    reason = raw.get("failure_reason") or raw.get("failureReason")
+    if reason and reason != "UNKNOWN_FAILURE_REASON":
+        return str(reason)
+    if msg:
+        if reason:
+            return f"{msg} ({reason})"
+        return str(msg)
+    return str(reason or "order rejected")
+
+
 def _extract_order_id(raw: Dict[str, Any]) -> str:
     if not isinstance(raw, dict):
         return ""
@@ -192,15 +209,14 @@ class CoinbaseExchangeClient(BaseRestClient):
             and isinstance(parsed, dict)
             and parsed.get("success") is False
         ):
-            er = parsed.get("error_response") or parsed.get("errorResponse") or {}
-            msg = (
-                parsed.get("failure_reason")
-                or parsed.get("failureReason")
-                or (er.get("message") if isinstance(er, dict) else None)
-                or (er.get("error") if isinstance(er, dict) else None)
-                or "order rejected"
+            msg = _coinbase_order_reject_message(parsed)
+            product_id = str((json_body or {}).get("product_id") or "")
+            client_order_id = str((json_body or {}).get("client_order_id") or "")
+            raise LiveTradingError(
+                "Coinbase Advanced Trade order rejected: "
+                f"{msg}; product_id={product_id}; client_order_id={client_order_id}; "
+                f"summary={_coinbase_response_summary(parsed)}"
             )
-            raise LiveTradingError(f"Coinbase Advanced Trade order rejected: {msg}")
         return parsed
 
     def ping(self) -> bool:
