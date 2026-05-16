@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import g
 
 from app.routes import strategy as strategy_routes
+from app.utils import strategy_runtime_logs
 
 
 class _FakeCursor:
@@ -78,3 +79,16 @@ def test_get_strategy_logs_returns_system_timezone(app, monkeypatch):
 
     payload = response.get_json()
     assert payload["data"][0]["timestamp"] == "2026-05-17T01:18:29+08:00"
+
+
+def test_clear_strategy_logs_verifies_owner_and_returns_deleted_count(app, monkeypatch):
+    monkeypatch.setattr(strategy_routes, "get_strategy_service", lambda: _FakeStrategyService())
+    monkeypatch.setattr(strategy_runtime_logs, "clear_strategy_logs", lambda strategy_id: 12)
+
+    with app.test_request_context("/strategies/logs?id=9", method="DELETE"):
+        g.user_id = 123
+        response = strategy_routes.clear_strategy_logs_route.__wrapped__()
+
+    payload = response.get_json()
+    assert payload["code"] == 1
+    assert payload["data"]["deleted"] == 12

@@ -1179,6 +1179,28 @@ class PendingOrderWorker:
         market_type = str(market_type or "swap").strip().lower()
         if market_type in ("futures", "future", "perp", "perpetual"):
             market_type = "swap"
+        leverage = payload.get("leverage")
+        if leverage is None:
+            leverage = cfg.get("leverage")
+        try:
+            leverage = float(leverage or 1.0)
+        except Exception:
+            leverage = 1.0
+        if leverage <= 0:
+            leverage = 1.0
+
+        if exchange_id == "coinbaseexchange":
+            sig = str(signal_type or "").strip().lower()
+            if market_type != "spot" or leverage != 1.0 or "short" in sig:
+                err = (
+                    "coinbase_spot_only: Coinbase Advanced Trade supports spot buy/sell only "
+                    "(market_type=spot, leverage=1); use Binance/OKX/Bybit/Bitget for leveraged long/short."
+                )
+                self._mark_failed(order_id=order_id, error=err)
+                _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} {err}")
+                _notify_live_best_effort(status="failed", error=err)
+                append_strategy_log(strategy_id, "error", f"Order rejected: {err}")
+                return
 
         client = None
         try:
@@ -1325,15 +1347,6 @@ class PendingOrderWorker:
         # Leverage handling (best-effort):
         # - For OKX swap, leverage must be set via private endpoint; otherwise exchange defaults apply.
         # - For other exchanges, leverage setting is not implemented yet in this local client.
-        leverage = payload.get("leverage")
-        if leverage is None:
-            leverage = cfg.get("leverage")
-        try:
-            leverage = float(leverage or 1.0)
-        except Exception:
-            leverage = 1.0
-        if leverage <= 0:
-            leverage = 1.0
 
         # [FEATURE] Sync positions before execution to ensure size is checking against reality
         # The user requested to sync before EVERY live order to prevent mismatch.

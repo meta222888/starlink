@@ -2142,3 +2142,30 @@ def get_strategy_logs():
             return jsonify({'code': 1, 'msg': 'success', 'data': []})
         logger.error(f"get_strategy_logs failed: {str(e)}")
         return jsonify({'code': 0, 'msg': str(e)}), 500
+
+
+@strategy_bp.route('/strategies/logs', methods=['DELETE'])
+@login_required
+def clear_strategy_logs_route():
+    """Clear strategy running logs for the current user's strategy."""
+    try:
+        user_id = g.user_id
+        strategy_id = request.args.get('id', type=int)
+        if not strategy_id:
+            return jsonify({'code': 0, 'msg': 'Strategy ID required'}), 400
+
+        st = get_strategy_service().get_strategy(int(strategy_id), user_id=user_id)
+        if not st:
+            return jsonify({'code': 0, 'msg': 'Strategy not found'}), 404
+
+        from app.utils.strategy_runtime_logs import clear_strategy_logs
+        deleted = clear_strategy_logs(int(strategy_id))
+        return jsonify({'code': 1, 'msg': 'success', 'data': {'deleted': deleted}})
+    except Exception as e:
+        if PgUndefinedTable is not None and isinstance(e, PgUndefinedTable):
+            return jsonify({'code': 1, 'msg': 'success', 'data': {'deleted': 0}})
+        el = str(e).lower()
+        if 'qd_strategy_logs' in el and ('does not exist' in el or 'no such table' in el):
+            return jsonify({'code': 1, 'msg': 'success', 'data': {'deleted': 0}})
+        logger.error(f"clear_strategy_logs failed: {str(e)}")
+        return jsonify({'code': 0, 'msg': str(e)}), 500

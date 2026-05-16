@@ -3214,6 +3214,22 @@ class TradingExecutor:
                     if not exchange_id:
                         append_strategy_log(strategy_id, "error", "Order rejected: live strategy has no exchange credential selected")
                         return {"success": False, "error": "missing_exchange_credential"}
+                    if exchange_id == "coinbaseexchange":
+                        mt = str(market_type or cfg.get("market_type") or "").strip().lower()
+                        if mt in ("futures", "future", "perp", "perpetual"):
+                            mt = "swap"
+                        try:
+                            lev = float(leverage or cfg.get("leverage") or 1.0)
+                        except Exception:
+                            lev = 1.0
+                        sig = str(signal_type or "").strip().lower()
+                        if mt != "spot" or lev != 1.0 or "short" in sig:
+                            err = (
+                                "coinbase_spot_only: Coinbase Advanced Trade supports spot buy/sell only "
+                                "(market_type=spot, leverage=1); use a perpetual exchange for leveraged long/short."
+                            )
+                            append_strategy_log(strategy_id, "error", f"Order rejected: {err}")
+                            return {"success": False, "error": err}
                 except Exception as e:
                     logger.warning(f"live exchange config precheck failed: strategy_id={strategy_id}, err={e}")
 

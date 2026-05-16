@@ -31,7 +31,9 @@ _CRYPTO_EXCHANGES_SPOT_AND_SWAP: Set[str] = {
     "binance", "okx", "bitget", "bybit",
     "kraken", "kucoin", "gate", "deepcoin", "htx",
 }
-# Coinbase Exchange API is institutional spot-only on our side.
+# Coinbase Advanced Trade is spot-only in this integration. We do not use its
+# derivatives/margin order fields, so QuantDinger must treat Coinbase as simple
+# buy/sell spot execution only.
 _CRYPTO_EXCHANGES_SPOT_ONLY: Set[str] = {"coinbaseexchange"}
 
 
@@ -71,7 +73,7 @@ BROKER_MARKETS: Dict[str, Dict[str, Set[str]]] = _build_broker_markets()
 # margin accounts, but neither _execute_ibkr_order nor _execute_alpaca_order
 # in pending_order_worker.py implement the short path (they reject any
 # signal containing 'short').
-LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca"}
+LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca", "coinbaseexchange"}
 
 
 # Map bot strategy type -> markets where that bot makes sense and can
@@ -263,8 +265,9 @@ def validate_strategy_config(
                 )
             if ex == "coinbaseexchange" and mc == "Crypto" and mt == "swap":
                 raise ValueError(
-                    "Coinbase Exchange is spot-only in QuantDinger (no perpetual "
-                    "contracts). Got market_type='swap'. Set market_type='spot', "
+                    "Coinbase Advanced Trade is spot-only in QuantDinger "
+                    "(no perpetual contracts, no leveraged open_long/open_short). "
+                    "Got market_type='swap'. Set market_type='spot' and leverage=1, "
                     "or use Binance/OKX/Bybit/Bitget for crypto perpetuals."
                 )
             raise ValueError(
@@ -272,8 +275,15 @@ def validate_strategy_config(
                 f"Allowed: {sorted(allowed_mts)}."
             )
 
-    # Rule 5: long-only brokers
+    # Rule 5: long-only brokers / spot-only integrations
     if ex in LONG_ONLY_BROKERS and td and td != "long":
+        if ex == "coinbaseexchange":
+            raise ValueError(
+                "Coinbase Advanced Trade in QuantDinger supports spot buy/sell only "
+                "(market_type='spot', leverage=1). Set trade_direction='long'; "
+                "short/both or leveraged long/short strategies require a perpetual "
+                "exchange such as Binance/OKX/Bybit/Bitget."
+            )
         raise ValueError(
             f"{ex.upper()} live execution in QuantDinger is currently "
             f"long-only (got trade_direction='{td}'). For short selling "

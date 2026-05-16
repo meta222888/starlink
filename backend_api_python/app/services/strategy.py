@@ -1039,6 +1039,10 @@ class StrategyService:
                         _raw_mt, _resolved_mt, exchange_id, market_category,
                     )
                 trading_config['market_type'] = _resolved_mt
+            if exchange_id == 'coinbaseexchange':
+                trading_config['market_type'] = 'spot'
+                trading_config['leverage'] = 1
+                trading_config.setdefault('trade_direction', 'long')
         validate_strategy_config(
             exchange_id=exchange_id,
             market_category=market_category,
@@ -1432,6 +1436,10 @@ class StrategyService:
                         _eff_mt, _resolved_mt_upd, ex_id, market_category,
                     )
                 trading_config['market_type'] = _resolved_mt_upd
+            if ex_id == 'coinbaseexchange':
+                trading_config['market_type'] = 'spot'
+                trading_config['leverage'] = 1
+                trading_config.setdefault('trade_direction', 'long')
         _validate_policy_upd(
             exchange_id=ex_id,
             market_category=market_category,
@@ -1537,6 +1545,32 @@ class StrategyService:
         exchange_id = str((resolved or {}).get('exchange_id') or '').strip().lower()
         if not exchange_id:
             return False, "Live strategy requires a valid exchange credential. Please reselect and save the exchange credential."
+        from app.services.broker_market_policy import validate_strategy_config
+
+        trading_config = st.get('trading_config') if isinstance(st.get('trading_config'), dict) else {}
+        market_category = st.get('market_category') or 'Crypto'
+        market_type = trading_config.get('market_type') or st.get('market_type')
+        leverage = st.get('leverage') or trading_config.get('leverage') or 1
+        try:
+            validate_strategy_config(
+                exchange_id=exchange_id,
+                market_category=market_category,
+                market_type=market_type,
+                trade_direction=trading_config.get('trade_direction'),
+                bot_type=trading_config.get('bot_type'),
+                require_exchange=True,
+            )
+        except ValueError as e:
+            return False, str(e)
+        try:
+            lev = float(leverage or 1)
+        except Exception:
+            lev = 1.0
+        if exchange_id == 'coinbaseexchange' and lev != 1.0:
+            return False, (
+                "Coinbase Advanced Trade supports spot buy/sell only in QuantDinger: "
+                "set market_type='spot', leverage=1, trade_direction='long'."
+            )
         return True, ""
 
     def delete_strategy(self, strategy_id: int, user_id: int = None) -> bool:
