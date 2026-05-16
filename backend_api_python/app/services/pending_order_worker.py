@@ -2216,9 +2216,55 @@ class PendingOrderWorker:
         # Build final result (best-effort)
         filled_final = float(total_base or 0.0)
         avg_final = float(_current_avg() or 0.0)
-        if filled_final <= 0 and ref_price > 0:
-            filled_final = float(amount or 0.0)
-            avg_final = float(ref_price or 0.0)
+        if filled_final <= 0 or avg_final <= 0:
+            if market_order_id or limit_order_id:
+                note = (
+                    "live_order_submitted_no_confirmed_fill:"
+                    f" exchange={exchange_id} symbol={symbol} signal={signal_type}"
+                    f" order_id={market_order_id or limit_order_id}"
+                )
+                self._mark_sent(
+                    order_id=order_id,
+                    note=note[:200],
+                    exchange_id=str(exchange_config.get("exchange_id") or ""),
+                    exchange_order_id=str(market_order_id or limit_order_id),
+                    exchange_response_json=json.dumps({"phases": phases}, ensure_ascii=False),
+                    filled=0.0,
+                    avg_price=0.0,
+                    executed_at=None,
+                )
+                _console_print(
+                    f"[worker] order submitted but no confirmed fill: strategy_id={strategy_id} "
+                    f"pending_id={order_id} exchange={exchange_id} order_id={market_order_id or limit_order_id}"
+                )
+                append_strategy_log(
+                    strategy_id,
+                    "warn",
+                    f"Order submitted but no confirmed fill yet: {signal_type} {symbol} "
+                    f"(exchange={exchange_id}, order_id={market_order_id or limit_order_id})",
+                )
+                _notify_live_best_effort(
+                    status="sent",
+                    exchange_id=str(exchange_config.get("exchange_id") or ""),
+                    exchange_order_id=str(market_order_id or limit_order_id),
+                    price_hint=ref_price,
+                    amount_hint=amount,
+                )
+                return
+
+            err = "no_exchange_order_or_confirmed_fill"
+            self._mark_failed(order_id=order_id, error=err)
+            _console_print(
+                f"[worker] order failed: strategy_id={strategy_id} pending_id={order_id} "
+                f"exchange={exchange_id} no exchange order id or confirmed fill"
+            )
+            _notify_live_best_effort(status="failed", error=err, amount_hint=amount, price_hint=ref_price)
+            append_strategy_log(
+                strategy_id,
+                "error",
+                f"Order rejected: exchange did not return an order id or confirmed fill ({exchange_id} {symbol} {signal_type})",
+            )
+            return
 
         res = type("Tmp", (), {"exchange_id": str(exchange_config.get("exchange_id") or ""), "exchange_order_id": str(market_order_id or limit_order_id), "raw": phases, "filled": filled_final, "avg_price": avg_final})()
 

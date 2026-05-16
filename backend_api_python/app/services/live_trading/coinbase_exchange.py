@@ -32,6 +32,27 @@ from app.services.live_trading.symbols import to_coinbase_product_id
 logger = logging.getLogger(__name__)
 
 
+def _short(value: Any, limit: int = 500) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _coinbase_response_summary(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {"type": type(raw).__name__}
+    sr = raw.get("success_response") or raw.get("successResponse") or {}
+    er = raw.get("error_response") or raw.get("errorResponse") or {}
+    return {
+        "success": raw.get("success"),
+        "order_id": _extract_order_id(raw),
+        "failure_reason": raw.get("failure_reason") or raw.get("failureReason"),
+        "error": raw.get("error") or (er.get("error") if isinstance(er, dict) else None),
+        "message": raw.get("message") or (er.get("message") if isinstance(er, dict) else None),
+        "success_keys": sorted(sr.keys()) if isinstance(sr, dict) else [],
+        "top_keys": sorted(raw.keys()),
+    }
+
+
 def _extract_order_id(raw: Dict[str, Any]) -> str:
     if not isinstance(raw, dict):
         return ""
@@ -124,6 +145,14 @@ class CoinbaseExchangeClient(BaseRestClient):
             "Content-Type": "application/json",
             "User-Agent": "QuantDinger/CoinbaseAdvancedTrade",
         }
+        log_body = json_body if method.upper() != "GET" else None
+        logger.info(
+            "coinbase request: method=%s path=%s params=%s body=%s",
+            str(method or "GET").upper(),
+            p,
+            params or {},
+            _short(log_body),
+        )
         try:
             resp = requests.request(
                 str(method or "GET").upper(),
@@ -145,11 +174,33 @@ class CoinbaseExchangeClient(BaseRestClient):
             parsed = resp.json() if text else {}
         except Exception:
             parsed = {"raw_text": text[:2000]}
+        logger.info(
+            "coinbase response: method=%s path=%s status=%s summary=%s",
+            str(method or "GET").upper(),
+            p,
+            resp.status_code,
+            _coinbase_response_summary(parsed),
+        )
         if resp.status_code >= 400:
             err = parsed.get("message") or parsed.get("error") or text[:500]
             raise LiveTradingError(f"Coinbase Advanced Trade HTTP {resp.status_code}: {err}")
         if isinstance(parsed, dict) and parsed.get("error"):
             raise LiveTradingError(f"Coinbase Advanced Trade error: {parsed.get('error')}")
+        if (
+            str(method or "").upper() == "POST"
+            and p.endswith("/orders")
+            and isinstance(parsed, dict)
+            and parsed.get("success") is False
+        ):
+            er = parsed.get("error_response") or parsed.get("errorResponse") or {}
+            msg = (
+                parsed.get("failure_reason")
+                or parsed.get("failureReason")
+                or (er.get("message") if isinstance(er, dict) else None)
+                or (er.get("error") if isinstance(er, dict) else None)
+                or "order rejected"
+            )
+            raise LiveTradingError(f"Coinbase Advanced Trade order rejected: {msg}")
         return parsed
 
     def ping(self) -> bool:
@@ -217,6 +268,8 @@ class CoinbaseExchangeClient(BaseRestClient):
         }
         raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
         oid = _extract_order_id(raw if isinstance(raw, dict) else {})
+        if not oid:
+            raise LiveTradingError(f"Coinbase Advanced Trade did not return order_id: {_coinbase_response_summary(raw)}")
         return LiveOrderResult(
             exchange_id="coinbaseexchange",
             exchange_order_id=oid,
@@ -258,6 +311,8 @@ class CoinbaseExchangeClient(BaseRestClient):
         }
         raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
         oid = _extract_order_id(raw if isinstance(raw, dict) else {})
+        if not oid:
+            raise LiveTradingError(f"Coinbase Advanced Trade did not return order_id: {_coinbase_response_summary(raw)}")
         return LiveOrderResult(
             exchange_id="coinbaseexchange",
             exchange_order_id=oid,
