@@ -61,10 +61,8 @@ def _is_saas_mode() -> bool:
 def _normalize_expiry(days: int | None) -> datetime | None:
     """Return an *aware* UTC datetime expires_at value.
 
-    psycopg2 will convert it to the server's TZ wall-clock when storing into
-    the ``TIMESTAMP WITHOUT TIME ZONE`` column, which keeps a single
-    "naive timestamp = server local wall-clock" rule across the whole DB and
-    lets ``SafeJSONProvider`` serialize it back to UTC ISO correctly.
+    The API serializer converts it back to the server/system time zone when
+    returning JSON.
     """
     if not days:
         return None
@@ -171,7 +169,7 @@ def issue_token():
         "instruments": instruments,
         "paper_only": paper_only,
         "rate_limit_per_min": rate_limit,
-        # Datetimes go through SafeJSONProvider → UTC ISO (with Z).
+        # Datetimes go through SafeJSONProvider in the system time zone.
         "expires_at": expires_at,
         "created_at": row.get("created_at"),
     }, message="issued")

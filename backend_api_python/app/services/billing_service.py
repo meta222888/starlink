@@ -17,6 +17,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.timeutil import to_system_iso
 
 logger = get_logger(__name__)
 
@@ -725,18 +726,14 @@ class BillingService:
                 rows = cur.fetchall() or []
                 cur.close()
 
-                # Format created_at as ISO 8601 with Z (UTC) for correct frontend display
+                # Format created_at in the server/system time zone for frontend display.
                 logs = []
                 for r in rows:
                     d = dict(r)
                     if d.get('created_at'):
                         dt = d['created_at']
                         if hasattr(dt, 'isoformat'):
-                            if getattr(dt, 'tzinfo', None) is not None:
-                                d['created_at'] = dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
-                            else:
-                                # 无时区：新记录用 UTC 写入，旧记录可能为服务器本地时间，统一按 UTC 返回以便前端正确转换
-                                d['created_at'] = dt.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
+                            d['created_at'] = to_system_iso(dt)
                     logs.append(d)
                 
                 return {

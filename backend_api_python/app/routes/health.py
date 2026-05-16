@@ -14,7 +14,7 @@ def index():
         'name': 'QuantDinger Python API',
         'version': '2.0.0',
         'status': 'running',
-        # SafeJSONProvider serializes datetimes as UTC ISO (with Z).
+        # SafeJSONProvider serializes datetimes in the system time zone.
         'timestamp': datetime.now(timezone.utc)
     })
 

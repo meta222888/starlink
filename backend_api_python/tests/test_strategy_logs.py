@@ -1,5 +1,7 @@
 """Tests for strategy runtime log API behavior."""
 
+from datetime import datetime
+
 from flask import g
 
 from app.routes import strategy as strategy_routes
@@ -54,3 +56,25 @@ def test_get_strategy_logs_returns_newest_first(app, monkeypatch):
     payload = response.get_json()
     assert payload["code"] == 1
     assert [item["message"] for item in payload["data"]] == ["newest", "middle", "oldest"]
+
+
+def test_get_strategy_logs_returns_system_timezone(app, monkeypatch):
+    rows = [
+        {
+            "id": 1,
+            "strategy_id": 9,
+            "level": "info",
+            "message": "started",
+            "timestamp": datetime(2026, 5, 16, 17, 18, 29),
+        },
+    ]
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    monkeypatch.setattr(strategy_routes, "get_strategy_service", lambda: _FakeStrategyService())
+    monkeypatch.setattr(strategy_routes, "get_db_connection", lambda: _FakeDb(rows))
+
+    with app.test_request_context("/strategies/logs?id=9"):
+        g.user_id = 123
+        response = strategy_routes.get_strategy_logs.__wrapped__()
+
+    payload = response.get_json()
+    assert payload["data"][0]["timestamp"] == "2026-05-17T01:18:29+08:00"

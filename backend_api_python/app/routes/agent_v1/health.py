@@ -24,7 +24,7 @@ def health():
         "service": "quantdinger-agent-gateway",
         "version": "v1",
         "status": "ok",
-        # SafeJSONProvider serializes datetimes as UTC ISO (with Z).
+        # SafeJSONProvider serializes datetimes in the system time zone.
         "timestamp": datetime.now(timezone.utc),
     }), 200
 

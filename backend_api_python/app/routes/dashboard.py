@@ -41,18 +41,16 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _format_datetime(dt: Any) -> Any:
-    """Convert a datetime to a UTC ISO 8601 string for the frontend.
+    """Convert a datetime to system-local ISO 8601 for the frontend.
 
-    Naive datetimes from the DB are interpreted in the server's wall-clock
-    time zone (container ``TZ`` env var) — the previous implementation
-    assumed UTC, which is only correct on UTC deployments and silently
-    shifted timestamps by 8 hours on the default ``Asia/Shanghai`` setup.
+    The explicit offset keeps browser parsing unambiguous while matching the
+    server clock operators see in logs.
     """
     if dt is None:
         return None
     if hasattr(dt, 'isoformat'):
-        from app.utils.timeutil import to_utc_iso
-        return to_utc_iso(dt)
+        from app.utils.timeutil import to_system_iso
+        return to_system_iso(dt)
     return dt
 
 

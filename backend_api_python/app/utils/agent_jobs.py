@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.utils.timeutil import to_system_iso
 
 logger = get_logger(__name__)
 
@@ -146,7 +147,7 @@ def submit_job(
         "job_id": job_id,
         "status": "queued",
         "kind": kind,
-        "created_at": created_at.isoformat() + "Z",
+        "created_at": to_system_iso(created_at),
     }
 
 

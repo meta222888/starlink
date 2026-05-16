@@ -375,7 +375,7 @@ def set_user_vip():
             return jsonify({
                 'code': 1,
                 'msg': 'VIP status updated successfully',
-                # Let SafeJSONProvider normalize datetimes to UTC ISO (with Z).
+                # Let SafeJSONProvider normalize datetimes to the system time zone.
                 'data': {'vip_expires_at': expires_at if expires_at else None}
             })
         else:
@@ -615,7 +615,7 @@ def get_my_referrals():
                     'username': row['username'],
                     'nickname': row['nickname'],
                     'avatar': row['avatar'],
-                    # SafeJSONProvider serializes datetimes as UTC ISO.
+                    # SafeJSONProvider serializes datetimes in the system time zone.
                     'created_at': row['created_at']
                 })
         
@@ -1350,7 +1350,7 @@ def get_system_strategies():
                 cs_type = trading_config.get('cs_strategy_type') or 'single'
                 symbol_list = trading_config.get('symbol_list') or []
 
-            # Timestamps are emitted as UTC ISO by SafeJSONProvider — pass
+            # Timestamps are emitted by SafeJSONProvider — pass
             # datetime objects straight through.
             created_at = s.get('created_at')
             updated_at = s.get('updated_at')
@@ -1569,7 +1569,7 @@ def get_admin_orders():
 
         items = []
         for row in rows:
-            # SafeJSONProvider normalizes datetimes to UTC ISO; no manual
+            # SafeJSONProvider normalizes datetimes to system-local ISO; no manual
             # conversion needed.
             created_at = row.get('created_at')
             paid_at = row.get('paid_at')
@@ -1781,7 +1781,7 @@ def get_admin_ai_stats():
             cur.close()
 
         # Build per-user items
-        from app.utils.timeutil import to_utc_iso
+        from app.utils.timeutil import to_system_iso
 
         user_items = []
         for row in user_rows:
@@ -1790,10 +1790,8 @@ def get_admin_ai_stats():
                 continue
 
             ms = memory_stats_map.get(uid, {})
-            # Server stores naive TIMESTAMP in container TZ; emit UTC ISO so the
-            # browser can render it in the user's locale correctly.
-            last_at = to_utc_iso(row.get('last_analysis_at'))
-            first_at = to_utc_iso(row.get('first_analysis_at'))
+            last_at = to_system_iso(row.get('last_analysis_at'))
+            first_at = to_system_iso(row.get('first_analysis_at'))
 
             user_items.append({
                 'user_id': int(uid),
@@ -1818,8 +1816,8 @@ def get_admin_ai_stats():
             if not user_id:  # Skip rows with NULL user_id
                 continue
 
-            created_at = to_utc_iso(row.get('created_at'))
-            completed_at = to_utc_iso(row.get('completed_at'))
+            created_at = to_system_iso(row.get('created_at'))
+            completed_at = to_system_iso(row.get('completed_at'))
 
             recent_items.append({
                 'id': int(row.get('id') or 0),

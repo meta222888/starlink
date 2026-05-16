@@ -53,22 +53,16 @@ def _now_ts() -> int:
 def _serialize_monitor_ts(value):
     """Serialize a TIMESTAMP value for the frontend.
 
-    DB columns are ``TIMESTAMP WITHOUT TIME ZONE`` and PostgreSQL writes them
-    as wall-clock in the container's ``TZ`` (see docker-compose ``TZ`` env
-    var).  The old implementation assumed naive = UTC, which was wrong on any
-    deployment whose container TZ wasn't UTC (default is Asia/Shanghai for
-    this project) and caused an 8-hour drift on the dashboard.
-
-    Delegating to ``to_utc_iso`` keeps this consistent with the global
-    ``SafeJSONProvider`` rule: naive timestamps are interpreted in the server's
-    local time zone, then re-emitted as UTC ISO 8601 with a ``Z`` suffix.
+    Delegating to ``to_system_iso`` keeps this consistent with the global
+    ``SafeJSONProvider`` rule: DB timestamps are emitted in the host/system
+    time zone with an explicit offset.
     """
-    from app.utils.timeutil import to_utc_iso
+    from app.utils.timeutil import to_system_iso
 
     if value is None:
         return None
     if isinstance(value, datetime):
-        return to_utc_iso(value)
+        return to_system_iso(value)
     if isinstance(value, date):
         return value.isoformat()
     return value

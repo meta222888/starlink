@@ -12,7 +12,7 @@ from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 
 from app.utils.logger import setup_logger, get_logger
-from app.utils.timeutil import to_utc_iso
+from app.utils.timeutil import to_system_iso
 
 
 class SafeJSONProvider(DefaultJSONProvider):
@@ -22,13 +22,10 @@ class SafeJSONProvider(DefaultJSONProvider):
        ``NaN`` / ``Infinity`` tokens which are **not** valid JSON per RFC 8259
        and crash ``JSON.parse()`` on the frontend.
 
-    2. ``datetime`` → UTC ISO 8601 (``...Z``).  Database columns are stored as
-       naive ``TIMESTAMP`` in the container's local time zone (``TZ`` env
-       var).  Sending them out as a naive string forces the browser to
-       interpret them as *local* time, which breaks every user whose locale
-       differs from the server.  We normalize all datetimes to UTC with an
-       explicit ``Z`` suffix so the frontend can safely call
-       ``new Date(text).toLocaleString()``.
+    2. ``datetime`` → system-local ISO 8601 with an explicit offset.  Database
+       columns are naive ``TIMESTAMP`` values, so sending them out without any
+       offset makes browser parsing ambiguous.  We normalize API datetimes to
+       the host time zone so operator-facing logs match the server clock.
 
     ``date`` objects (without a time component) are passed through as plain
     ISO date strings since they don't carry a time-of-day to reinterpret.
@@ -38,7 +35,7 @@ class SafeJSONProvider(DefaultJSONProvider):
     def default(o):
         """Handle non-serializable objects (datetimes first, then super)."""
         if isinstance(o, datetime):
-            return to_utc_iso(o)
+            return to_system_iso(o)
         if isinstance(o, date):
             return o.isoformat()
         return DefaultJSONProvider.default(o)
@@ -60,7 +57,7 @@ def _sanitize(obj):
             return None
         return obj
     if isinstance(obj, datetime):
-        return to_utc_iso(obj)
+        return to_system_iso(obj)
     if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, dict):
