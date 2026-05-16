@@ -2131,7 +2131,7 @@ def get_strategy_logs():
                 from app.utils.timeutil import to_utc_iso
                 rr['timestamp'] = to_utc_iso(ts)
             out.append(rr)
-        logs = list(reversed(out))
+        logs = out
         return jsonify({'code': 1, 'msg': 'success', 'data': logs})
     except Exception as e:
         if PgUndefinedTable is not None and isinstance(e, PgUndefinedTable):
