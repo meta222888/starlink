@@ -33,3 +33,16 @@ def test_resolve_exchange_config_normalizes_camel_case_exchange_id():
     resolved = exchange_execution.resolve_exchange_config({"exchangeId": "coinbase_exchange"})
 
     assert resolved["exchange_id"] == "coinbaseexchange"
+
+
+def test_resolve_exchange_config_exposes_missing_credential(monkeypatch):
+    monkeypatch.setattr(
+        exchange_execution,
+        "_load_credential_config",
+        lambda credential_id, user_id=1: {"_credential_error": "credential_id 1 not found for user 2"},
+    )
+
+    resolved = exchange_execution.resolve_exchange_config({"credential_id": 1}, user_id=2)
+
+    assert resolved["credential_id"] == 1
+    assert exchange_execution.credential_error(resolved) == "credential_id 1 not found for user 2"

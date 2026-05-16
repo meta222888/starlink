@@ -183,6 +183,10 @@ def _load_credential_config(credential_id: int, user_id: int = 1) -> Dict[str, A
         )
         row = cur.fetchone() or {}
         cur.close()
+    if not row:
+        return {
+            "_credential_error": f"credential_id {int(credential_id)} not found for user {int(user_id)}"
+        }
     row_exchange_id = normalize_exchange_id(
         row.get("row_exchange_id") if isinstance(row, dict) else ""
     )
@@ -191,7 +195,10 @@ def _load_credential_config(credential_id: int, user_id: int = 1) -> Dict[str, A
         plain = decrypt_credential_blob(raw)
     except ValueError as e:
         logger.warning(f"decrypt credential_id={credential_id}: {e}")
-        return {"exchange_id": row_exchange_id} if row_exchange_id else {}
+        cfg = {"_credential_error": f"credential_id {int(credential_id)} cannot be decrypted"}
+        if row_exchange_id:
+            cfg["exchange_id"] = row_exchange_id
+        return cfg
     cfg = _safe_json_loads(plain, {}) or {}
     if not isinstance(cfg, dict):
         cfg = {}
@@ -230,6 +237,7 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
                 merged.update(base)
     except Exception as e:
         logger.warning(f"Failed to load credential_id={credential_id}: {e}")
+        merged["_credential_error"] = f"credential_id {credential_id} is invalid for user {int(user_id)}"
 
     # Overlay strategy-level settings (non-empty wins)
     for k, v in exchange_config.items():
@@ -246,5 +254,12 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
         merged["credential_id"] = credential_id
 
     return merged
+
+
+def credential_error(resolved_config: Dict[str, Any]) -> str:
+    """Return a human-readable saved-credential error, if any."""
+    if not isinstance(resolved_config, dict):
+        return ""
+    return str(resolved_config.get("_credential_error") or "").strip()
 
 

@@ -3195,6 +3195,28 @@ class TradingExecutor:
         行情/K 线不在此处拉取；order_mode 等由环境变量配置。
         """
         try:
+            if str(execution_mode or "").strip().lower() == "live":
+                try:
+                    from app.services.exchange_execution import (
+                        credential_error,
+                        load_strategy_configs,
+                        resolve_exchange_config,
+                    )
+
+                    cfg = load_strategy_configs(strategy_id)
+                    strategy_user_id = int(cfg.get("user_id") or 1)
+                    resolved = resolve_exchange_config(cfg.get("exchange_config") or {}, user_id=strategy_user_id)
+                    cred_err = credential_error(resolved)
+                    exchange_id = str((resolved or {}).get("exchange_id") or "").strip()
+                    if cred_err:
+                        append_strategy_log(strategy_id, "error", f"Order rejected: invalid exchange credential: {cred_err}")
+                        return {"success": False, "error": f"invalid_exchange_credential:{cred_err}"}
+                    if not exchange_id:
+                        append_strategy_log(strategy_id, "error", "Order rejected: live strategy has no exchange credential selected")
+                        return {"success": False, "error": "missing_exchange_credential"}
+                except Exception as e:
+                    logger.warning(f"live exchange config precheck failed: strategy_id={strategy_id}, err={e}")
+
             # Reference price at enqueue time: use current tick price if provided to avoid extra fetch.
             if ref_price is None:
                 ref_price = self._fetch_current_price(None, symbol, market_category=market_category) or 0.0

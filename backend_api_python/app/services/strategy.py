@@ -3,7 +3,7 @@ import time
 import json
 import threading
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from app.utils.logger import get_logger
@@ -1006,12 +1006,19 @@ class StrategyService:
         trading_config = payload.get('trading_config') or {}
         exchange_config = payload.get('exchange_config') or {}
 
-        from app.services.exchange_execution import get_credential_id, resolve_exchange_config
+        from app.services.exchange_execution import (
+            credential_error,
+            get_credential_id,
+            resolve_exchange_config,
+        )
 
         resolved_ex_cfg = resolve_exchange_config(
             exchange_config if isinstance(exchange_config, dict) else {},
             user_id=int(user_id or 1),
         )
+        cred_err = credential_error(resolved_ex_cfg)
+        if execution_mode == 'live' and cred_err:
+            raise ValueError(f"Invalid exchange credential: {cred_err}")
 
         # Validate broker / market / market_type / direction / bot_type as a
         # single unit through the centralized policy (broker_market_policy.py).
@@ -1393,18 +1400,24 @@ class StrategyService:
         if payload.get('rebalance_frequency') is not None:
             trading_config['rebalance_frequency'] = payload.get('rebalance_frequency')
 
-        from app.services.exchange_execution import resolve_exchange_config as _resolve_ex_upd
+        # Resolve effective execution_mode (payload may override existing).
+        _upd_exec_mode = ((payload.get('execution_mode') if payload.get('execution_mode') is not None
+                           else existing.get('execution_mode')) or 'signal').strip().lower()
+        from app.services.exchange_execution import (
+            credential_error as _credential_error_upd,
+            resolve_exchange_config as _resolve_ex_upd,
+        )
 
         _merged_ex = _resolve_ex_upd(
             exchange_config if isinstance(exchange_config, dict) else {},
             user_id=int(user_id or 1),
         )
+        cred_err = _credential_error_upd(_merged_ex)
+        if _upd_exec_mode == 'live' and cred_err:
+            raise ValueError(f"Invalid exchange credential: {cred_err}")
         ex_id = (_merged_ex.get('exchange_id') or '').strip().lower() if isinstance(_merged_ex, dict) else ''
         if isinstance(exchange_config, dict) and credential_id and ex_id:
             exchange_config['exchange_id'] = ex_id
-        # Resolve effective execution_mode (payload may override existing).
-        _upd_exec_mode = ((payload.get('execution_mode') if payload.get('execution_mode') is not None
-                           else existing.get('execution_mode')) or 'signal').strip().lower()
         from app.services.broker_market_policy import (
             resolve_market_type as _resolve_market_type_upd,
             validate_strategy_config as _validate_policy_upd,
@@ -1503,6 +1516,28 @@ class StrategyService:
             db.commit()
             cur.close()
         return True
+
+    def validate_strategy_startable(self, strategy_id: int, user_id: int = None) -> Tuple[bool, str]:
+        """Validate live strategy prerequisites before changing status to running."""
+        st = self.get_strategy(strategy_id, user_id=user_id)
+        if not st:
+            return False, "Strategy not found"
+        if (st.get('execution_mode') or '').strip().lower() != 'live':
+            return True, ""
+
+        from app.services.exchange_execution import credential_error, resolve_exchange_config
+
+        resolved = resolve_exchange_config(
+            st.get('exchange_config') if isinstance(st.get('exchange_config'), dict) else {},
+            user_id=int(st.get('user_id') or user_id or 1),
+        )
+        cred_err = credential_error(resolved)
+        if cred_err:
+            return False, f"Invalid exchange credential: {cred_err}"
+        exchange_id = str((resolved or {}).get('exchange_id') or '').strip().lower()
+        if not exchange_id:
+            return False, "Live strategy requires a valid exchange credential. Please reselect and save the exchange credential."
+        return True, ""
 
     def delete_strategy(self, strategy_id: int, user_id: int = None) -> bool:
         """Delete strategy. If user_id is provided, verify ownership."""

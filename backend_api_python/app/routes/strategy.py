@@ -1093,6 +1093,10 @@ def start_strategy():
                 'msg': 'AI strategy has been removed; local edition does not support starting AI strategies',
                 'data': None
             }), 400
+        ok, reason = get_strategy_service().validate_strategy_startable(strategy_id, user_id=user_id)
+        if not ok:
+            return jsonify({'code': 0, 'msg': reason, 'data': {'detail': reason}}), 400
+
         get_strategy_service().update_strategy_status(strategy_id, 'running', user_id=user_id)
 
         executor = get_trading_executor()

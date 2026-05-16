@@ -1125,6 +1125,16 @@ class PendingOrderWorker:
         strategy_user_id = int(cfg.get("user_id") or 1)
         exchange_config = resolve_exchange_config(cfg.get("exchange_config") or {}, user_id=strategy_user_id)
         safe_cfg = safe_exchange_config_for_log(exchange_config)
+        from app.services.exchange_execution import credential_error
+
+        cred_err = credential_error(exchange_config)
+        if cred_err:
+            err = f"invalid_exchange_credential:{cred_err}"
+            self._mark_failed(order_id=order_id, error=err)
+            _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} {cred_err}")
+            _notify_live_best_effort(status="failed", error=err)
+            append_strategy_log(strategy_id, "error", f"Order rejected: invalid exchange credential: {cred_err}")
+            return
         exchange_id = str(exchange_config.get("exchange_id") or "").strip().lower()
         market_category = str(cfg.get("market_category") or "Crypto").strip()
 
