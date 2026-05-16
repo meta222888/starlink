@@ -60,11 +60,24 @@ _EXCHANGE_ID_ALIASES = {
     "coinbase": "coinbaseexchange",
 }
 
+_CREDENTIAL_ID_KEYS = ("credential_id", "credentialId", "credentials_id", "credentialsId")
+
 
 def normalize_exchange_id(exchange_id: Any) -> str:
     """Canonical broker id for policy checks and client factory routing."""
     key = str(exchange_id or "").strip().lower()
     return _EXCHANGE_ID_ALIASES.get(key, key)
+
+
+def get_credential_id(exchange_config: Dict[str, Any]) -> Any:
+    """Return a credential id from snake_case or camelCase config keys."""
+    if not isinstance(exchange_config, dict):
+        return None
+    for key in _CREDENTIAL_ID_KEYS:
+        value = exchange_config.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
 
 
 def _infer_market_category_from_exchange(exchange_id: str) -> str:
@@ -209,7 +222,7 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
         return {}
 
     merged: Dict[str, Any] = {}
-    credential_id = exchange_config.get("credential_id") or exchange_config.get("credentials_id")
+    credential_id = get_credential_id(exchange_config)
     try:
         if credential_id:
             base = _load_credential_config(int(credential_id), user_id=user_id)
@@ -229,6 +242,8 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
     ex = normalize_exchange_id(merged.get("exchange_id") or merged.get("exchangeId"))
     if ex:
         merged["exchange_id"] = ex
+    if credential_id:
+        merged["credential_id"] = credential_id
 
     return merged
 

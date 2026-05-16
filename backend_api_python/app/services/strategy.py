@@ -1006,7 +1006,7 @@ class StrategyService:
         trading_config = payload.get('trading_config') or {}
         exchange_config = payload.get('exchange_config') or {}
 
-        from app.services.exchange_execution import resolve_exchange_config
+        from app.services.exchange_execution import get_credential_id, resolve_exchange_config
 
         resolved_ex_cfg = resolve_exchange_config(
             exchange_config if isinstance(exchange_config, dict) else {},
@@ -1046,11 +1046,15 @@ class StrategyService:
                 "Live order placement on MOEX is not implemented."
             )
 
-        # When credential_id is present, strip raw API keys to avoid
+        # When a saved credential is referenced, strip raw API keys to avoid
         # storing secrets in the strategy record — they live in qd_exchange_credentials.
-        if isinstance(exchange_config, dict) and exchange_config.get('credential_id'):
+        credential_id = get_credential_id(exchange_config) if isinstance(exchange_config, dict) else None
+        if isinstance(exchange_config, dict) and credential_id:
             for _secret_key in ('api_key', 'secret_key', 'passphrase', 'apiKey', 'secret', 'password'):
                 exchange_config.pop(_secret_key, None)
+            exchange_config['credential_id'] = credential_id
+            if exchange_id:
+                exchange_config['exchange_id'] = exchange_id
 
         # Strategy group fields
         strategy_group_id = payload.get('strategy_group_id') or ''
@@ -1367,11 +1371,15 @@ class StrategyService:
         else:
             trading_config = existing_tc
 
-        # When credential_id is present, strip raw API keys to avoid
+        from app.services.exchange_execution import get_credential_id
+
+        # When a saved credential is referenced, strip raw API keys to avoid
         # storing secrets in the strategy record — they live in qd_exchange_credentials.
-        if isinstance(exchange_config, dict) and exchange_config.get('credential_id'):
+        credential_id = get_credential_id(exchange_config) if isinstance(exchange_config, dict) else None
+        if isinstance(exchange_config, dict) and credential_id:
             for _secret_key in ('api_key', 'secret_key', 'passphrase', 'apiKey', 'secret', 'password'):
                 exchange_config.pop(_secret_key, None)
+            exchange_config['credential_id'] = credential_id
 
         # Handle cross-sectional strategy config updates
         if payload.get('cs_strategy_type') is not None:
@@ -1392,6 +1400,8 @@ class StrategyService:
             user_id=int(user_id or 1),
         )
         ex_id = (_merged_ex.get('exchange_id') or '').strip().lower() if isinstance(_merged_ex, dict) else ''
+        if isinstance(exchange_config, dict) and credential_id and ex_id:
+            exchange_config['exchange_id'] = ex_id
         # Resolve effective execution_mode (payload may override existing).
         _upd_exec_mode = ((payload.get('execution_mode') if payload.get('execution_mode') is not None
                            else existing.get('execution_mode')) or 'signal').strip().lower()
