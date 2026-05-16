@@ -3225,8 +3225,9 @@ class TradingExecutor:
                         sig = str(signal_type or "").strip().lower()
                         if mt != "spot" or lev != 1.0 or "short" in sig:
                             err = (
-                                "coinbase_spot_only: Coinbase Advanced Trade supports spot buy/sell only "
-                                "(market_type=spot, leverage=1); use a perpetual exchange for leveraged long/short."
+                                "coinbase_perpetual_not_enabled: this Coinbase connector currently implements "
+                                "spot orders only (market_type=spot, leverage=1). Coinbase perpetual leverage "
+                                "requires a dedicated perpetual portfolio/margin implementation."
                             )
                             append_strategy_log(strategy_id, "error", f"Order rejected: {err}")
                             return {"success": False, "error": err}

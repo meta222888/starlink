@@ -89,11 +89,17 @@ def to_bybit_symbol(symbol: str) -> str:
 
 def to_coinbase_product_id(symbol: str) -> str:
     """
-    Coinbase Exchange product id format: BASE-QUOTE, e.g. BTC-USDT.
+    Coinbase Advanced Trade product id format: BASE-QUOTE, e.g. BTC-USDC.
+
+    QuantDinger's crypto UI commonly stores pairs as */USDT for cross-exchange
+    compatibility, but Coinbase App spot trading is USDC-quoted for many users.
+    Route USDT-quoted symbols to Coinbase's USDC products.
     """
     base, quote = _split_base_quote(symbol)
     if not base or not quote:
         return symbol
+    if quote == "USDT":
+        quote = "USDC"
     return f"{base}-{quote}"
 
 

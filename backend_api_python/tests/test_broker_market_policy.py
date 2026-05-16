@@ -248,7 +248,7 @@ class TestValidateIllegalCombos:
         assert "Binance/OKX/Bybit" in msg
 
     def test_coinbase_crypto_swap_rejected(self):
-        with pytest.raises(ValueError, match="Coinbase Advanced Trade is spot-only"):
+        with pytest.raises(ValueError, match="perpetual portfolio/margin implementation"):
             validate_strategy_config(
                 exchange_id="coinbaseexchange",
                 market_category="Crypto",
@@ -256,7 +256,7 @@ class TestValidateIllegalCombos:
             )
 
     def test_coinbase_short_or_both_direction_rejected(self):
-        with pytest.raises(ValueError, match="spot buy/sell only"):
+        with pytest.raises(ValueError, match="currently implements the spot"):
             validate_strategy_config(
                 exchange_id="coinbaseexchange",
                 market_category="Crypto",

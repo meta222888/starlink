@@ -1568,8 +1568,9 @@ class StrategyService:
             lev = 1.0
         if exchange_id == 'coinbaseexchange' and lev != 1.0:
             return False, (
-                "Coinbase Advanced Trade supports spot buy/sell only in QuantDinger: "
-                "set market_type='spot', leverage=1, trade_direction='long'."
+                "This QuantDinger Coinbase connector currently implements spot orders only: "
+                "set market_type='spot', leverage=1, trade_direction='long'. Coinbase "
+                "perpetual leverage requires a separate perpetual portfolio/margin implementation."
             )
         return True, ""
 

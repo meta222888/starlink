@@ -1193,8 +1193,9 @@ class PendingOrderWorker:
             sig = str(signal_type or "").strip().lower()
             if market_type != "spot" or leverage != 1.0 or "short" in sig:
                 err = (
-                    "coinbase_spot_only: Coinbase Advanced Trade supports spot buy/sell only "
-                    "(market_type=spot, leverage=1); use Binance/OKX/Bybit/Bitget for leveraged long/short."
+                    "coinbase_perpetual_not_enabled: this Coinbase connector currently implements "
+                    "spot orders only (market_type=spot, leverage=1). Coinbase perpetual leverage "
+                    "requires a dedicated perpetual portfolio/margin implementation."
                 )
                 self._mark_failed(order_id=order_id, error=err)
                 _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} {err}")

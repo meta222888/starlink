@@ -31,9 +31,10 @@ _CRYPTO_EXCHANGES_SPOT_AND_SWAP: Set[str] = {
     "binance", "okx", "bitget", "bybit",
     "kraken", "kucoin", "gate", "deepcoin", "htx",
 }
-# Coinbase Advanced Trade is spot-only in this integration. We do not use its
-# derivatives/margin order fields, so QuantDinger must treat Coinbase as simple
-# buy/sell spot execution only.
+# Coinbase Advanced Trade has perpetual products, but this integration currently
+# only implements the standard spot order/account flow. Perpetual portfolio,
+# margin, leverage, and position handling must be wired separately before swap
+# trading can be enabled safely.
 _CRYPTO_EXCHANGES_SPOT_ONLY: Set[str] = {"coinbaseexchange"}
 
 
@@ -265,10 +266,11 @@ def validate_strategy_config(
                 )
             if ex == "coinbaseexchange" and mc == "Crypto" and mt == "swap":
                 raise ValueError(
-                    "Coinbase Advanced Trade is spot-only in QuantDinger "
-                    "(no perpetual contracts, no leveraged open_long/open_short). "
-                    "Got market_type='swap'. Set market_type='spot' and leverage=1, "
-                    "or use Binance/OKX/Bybit/Bitget for crypto perpetuals."
+                    "Coinbase Advanced Trade perpetuals require a dedicated "
+                    "perpetual portfolio/margin implementation, which is not "
+                    "enabled in this QuantDinger connector yet. Got market_type='swap'. "
+                    "Use market_type='spot' for Coinbase spot, or another configured "
+                    "perpetual exchange for leveraged trading."
                 )
             raise ValueError(
                 f"{ex.upper()} + {mc} does not support market_type='{mt}'. "
@@ -279,10 +281,10 @@ def validate_strategy_config(
     if ex in LONG_ONLY_BROKERS and td and td != "long":
         if ex == "coinbaseexchange":
             raise ValueError(
-                "Coinbase Advanced Trade in QuantDinger supports spot buy/sell only "
-                "(market_type='spot', leverage=1). Set trade_direction='long'; "
-                "short/both or leveraged long/short strategies require a perpetual "
-                "exchange such as Binance/OKX/Bybit/Bitget."
+                "This QuantDinger Coinbase connector currently implements the spot "
+                "order flow only (market_type='spot', leverage=1). Coinbase "
+                "perpetual leverage requires a separate perpetual portfolio/margin "
+                "implementation before short/both directions can be enabled."
             )
         raise ValueError(
             f"{ex.upper()} live execution in QuantDinger is currently "
