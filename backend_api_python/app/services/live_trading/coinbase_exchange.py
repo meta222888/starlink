@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional
 
 import requests
@@ -42,7 +43,7 @@ def _coinbase_response_summary(raw: Any) -> Dict[str, Any]:
         return {"type": type(raw).__name__}
     sr = raw.get("success_response") or raw.get("successResponse") or {}
     er = raw.get("error_response") or raw.get("errorResponse") or {}
-    return {
+    out = {
         "success": raw.get("success"),
         "order_id": _extract_order_id(raw),
         "failure_reason": raw.get("failure_reason") or raw.get("failureReason"),
@@ -51,6 +52,12 @@ def _coinbase_response_summary(raw: Any) -> Dict[str, Any]:
         "success_keys": sorted(sr.keys()) if isinstance(sr, dict) else [],
         "top_keys": sorted(raw.keys()),
     }
+    if isinstance(er, dict) and er:
+        out["error_response"] = er
+    oc = raw.get("order_configuration") or raw.get("orderConfiguration")
+    if isinstance(oc, dict) and oc:
+        out["order_configuration"] = oc
+    return out
 
 
 def _coinbase_order_reject_message(raw: Dict[str, Any]) -> str:
@@ -81,6 +88,28 @@ def _extract_order_id(raw: Dict[str, Any]) -> str:
             if oid:
                 return str(oid)
     return str(raw.get("order_id") or raw.get("orderId") or "")
+
+
+def _decimal(value: Any) -> Decimal:
+    return Decimal(str(value or "0"))
+
+
+def _format_increment(value: Any, increment: Any, *, field: str) -> str:
+    val = _decimal(value)
+    inc = _decimal(increment or "0")
+    if val <= 0:
+        raise LiveTradingError(f"Invalid Coinbase {field}")
+    if inc > 0:
+        val = (val / inc).to_integral_value(rounding=ROUND_DOWN) * inc
+    if val <= 0:
+        raise LiveTradingError(f"Coinbase {field} is below allowed increment {increment}")
+    return format(val.normalize(), "f")
+
+
+def _new_client_order_id(_provided: Optional[str] = None) -> str:
+    # Coinbase documents this as a unique client-provided id. A UUID avoids
+    # accidental reuse and avoids broker-side quirks around custom id formats.
+    return str(uuid.uuid4())
 
 
 def _normalize_order_for_wait(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,6 +262,30 @@ class CoinbaseExchangeClient(BaseRestClient):
     def get_accounts(self) -> Any:
         return self._brokerage_request("GET", f"{API_PREFIX}/accounts", params={"limit": 250})
 
+    def get_product(self, product_id: str) -> Dict[str, Any]:
+        raw = self._brokerage_request(
+            "GET",
+            f"{API_PREFIX}/products/{product_id}",
+            params={"get_tradability_status": "true"},
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    def _validate_market_product(self, product_id: str) -> Dict[str, Any]:
+        product = self.get_product(product_id)
+        if not product:
+            raise LiveTradingError(f"Coinbase product not found: {product_id}")
+        restrictions = []
+        for key in ("trading_disabled", "cancel_only", "post_only", "view_only"):
+            if bool(product.get(key)):
+                restrictions.append(key)
+        if restrictions:
+            raise LiveTradingError(
+                f"Coinbase product {product_id} is not market-tradable: {','.join(restrictions)}"
+            )
+        if bool(product.get("limit_only")):
+            raise LiveTradingError(f"Coinbase product {product_id} is limit-only; market orders are disabled")
+        return product
+
     def _best_ask_mid(self, product_id: str) -> float:
         raw = self._brokerage_request(
             "GET",
@@ -264,7 +317,8 @@ class CoinbaseExchangeClient(BaseRestClient):
         if qty <= 0:
             raise LiveTradingError("Invalid size")
         product_id = to_coinbase_product_id(symbol)
-        coi = (client_order_id or "").strip() or uuid.uuid4().hex
+        product = self._validate_market_product(product_id)
+        coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"
         ioc: Dict[str, str] = {}
         if sd == "buy":
@@ -272,9 +326,29 @@ class CoinbaseExchangeClient(BaseRestClient):
             quote = mid * qty
             if quote <= 0:
                 raise LiveTradingError("Could not compute quote_size for market buy")
-            ioc["quote_size"] = f"{quote:.8f}".rstrip("0").rstrip(".")
+            quote_size = _format_increment(
+                quote,
+                product.get("quote_increment") or "0.01",
+                field="quote_size",
+            )
+            quote_min = _decimal(product.get("quote_min_size") or "0")
+            if quote_min > 0 and _decimal(quote_size) < quote_min:
+                raise LiveTradingError(
+                    f"Coinbase quote_size {quote_size} is below {product_id} minimum {quote_min}"
+                )
+            ioc["quote_size"] = quote_size
         else:
-            ioc["base_size"] = f"{qty:.8f}".rstrip("0").rstrip(".")
+            base_size = _format_increment(
+                qty,
+                product.get("base_increment") or "0.00000001",
+                field="base_size",
+            )
+            base_min = _decimal(product.get("base_min_size") or "0")
+            if base_min > 0 and _decimal(base_size) < base_min:
+                raise LiveTradingError(
+                    f"Coinbase base_size {base_size} is below {product_id} minimum {base_min}"
+                )
+            ioc["base_size"] = base_size
 
         body = {
             "client_order_id": coi,
@@ -311,16 +385,27 @@ class CoinbaseExchangeClient(BaseRestClient):
         if qty <= 0 or px <= 0:
             raise LiveTradingError("Invalid size/price")
         product_id = to_coinbase_product_id(symbol)
-        coi = (client_order_id or "").strip() or uuid.uuid4().hex
+        product = self.get_product(product_id)
+        coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"
+        base_size = _format_increment(
+            qty,
+            product.get("base_increment") or "0.00000001",
+            field="base_size",
+        )
+        limit_price = _format_increment(
+            px,
+            product.get("price_increment") or product.get("quote_increment") or "0.01",
+            field="limit_price",
+        )
         body = {
             "client_order_id": coi,
             "product_id": product_id,
             "side": side_key,
             "order_configuration": {
                 "limit_limit_gtc": {
-                    "base_size": f"{qty:.8f}".rstrip("0").rstrip("."),
-                    "limit_price": f"{px:.8f}".rstrip("0").rstrip("."),
+                    "base_size": base_size,
+                    "limit_price": limit_price,
                     "post_only": False,
                 }
             },
