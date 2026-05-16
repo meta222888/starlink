@@ -51,8 +51,20 @@ _EXCHANGE_TO_MARKET: Dict[str, str] = {
 }
 _CRYPTO_EXCHANGES = {
     "binance", "okx", "bitget", "bybit", "coinbaseexchange",
+    "coinbase_exchange", "coinbase",
     "kraken", "kucoin", "gate", "deepcoin", "htx",
 }
+
+_EXCHANGE_ID_ALIASES = {
+    "coinbase_exchange": "coinbaseexchange",
+    "coinbase": "coinbaseexchange",
+}
+
+
+def normalize_exchange_id(exchange_id: Any) -> str:
+    """Canonical broker id for policy checks and client factory routing."""
+    key = str(exchange_id or "").strip().lower()
+    return _EXCHANGE_ID_ALIASES.get(key, key)
 
 
 def _infer_market_category_from_exchange(exchange_id: str) -> str:
@@ -150,7 +162,7 @@ def _load_credential_config(credential_id: int, user_id: int = 1) -> Dict[str, A
         cur = db.cursor()
         cur.execute(
             """
-            SELECT encrypted_config
+            SELECT exchange_id AS row_exchange_id, encrypted_config
             FROM qd_exchange_credentials
             WHERE id = %s AND user_id = %s
             """,
@@ -158,13 +170,31 @@ def _load_credential_config(credential_id: int, user_id: int = 1) -> Dict[str, A
         )
         row = cur.fetchone() or {}
         cur.close()
-    raw = row.get("encrypted_config")
+    row_exchange_id = normalize_exchange_id(
+        row.get("row_exchange_id") if isinstance(row, dict) else ""
+    )
+    raw = row.get("encrypted_config") if isinstance(row, dict) else None
     try:
         plain = decrypt_credential_blob(raw)
     except ValueError as e:
         logger.warning(f"decrypt credential_id={credential_id}: {e}")
-        return {}
-    return _safe_json_loads(plain, {}) or {}
+        return {"exchange_id": row_exchange_id} if row_exchange_id else {}
+    cfg = _safe_json_loads(plain, {}) or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    blob_ex = normalize_exchange_id(cfg.get("exchange_id") or cfg.get("exchangeId"))
+    if row_exchange_id:
+        if blob_ex and blob_ex != row_exchange_id:
+            logger.info(
+                "credential id=%s: normalizing exchange_id %r -> %r (DB column wins)",
+                credential_id,
+                blob_ex,
+                row_exchange_id,
+            )
+        cfg["exchange_id"] = row_exchange_id
+    elif blob_ex:
+        cfg["exchange_id"] = blob_ex
+    return cfg
 
 
 def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -> Dict[str, Any]:
@@ -195,6 +225,10 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
         if isinstance(v, str) and not v.strip():
             continue
         merged[k] = v
+
+    ex = normalize_exchange_id(merged.get("exchange_id") or merged.get("exchangeId"))
+    if ex:
+        merged["exchange_id"] = ex
 
     return merged
 

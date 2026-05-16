@@ -278,11 +278,9 @@ def _load_credential(credential_id: int, user_id: int) -> Dict[str, Any]:
         )
         return {}
     row = db_row if isinstance(db_row, dict) else {}
-    rex = ""
-    try:
-        rex = str(row.get("row_exchange_id") or "").strip().lower()
-    except Exception:
-        rex = ""
+    from app.services.exchange_execution import normalize_exchange_id
+
+    rex = normalize_exchange_id(row.get("row_exchange_id") if isinstance(row, dict) else "")
     try:
         plain = decrypt_credential_blob(row.get("encrypted_config"))
     except ValueError as e:
@@ -296,17 +294,19 @@ def _load_credential(credential_id: int, user_id: int) -> Dict[str, Any]:
             user_id,
         )
         return {}
-    if isinstance(cfg, dict) and rex:
-        # Prefer DB row exchange_id — some legacy blobs omit it so create_client falls through wrongly.
-        old = str(cfg.get("exchange_id") or "").strip().lower()
-        if old != rex:
-            logger.info(
-                "credential id=%s: normalizing exchange_id %r -> %r (DB column wins)",
-                credential_id,
-                old or "",
-                rex,
-            )
-        cfg["exchange_id"] = rex
+    if isinstance(cfg, dict):
+        blob_ex = normalize_exchange_id(cfg.get("exchange_id") or cfg.get("exchangeId"))
+        if rex:
+            if blob_ex and blob_ex != rex:
+                logger.info(
+                    "credential id=%s: normalizing exchange_id %r -> %r (DB column wins)",
+                    credential_id,
+                    blob_ex,
+                    rex,
+                )
+            cfg["exchange_id"] = rex
+        elif blob_ex:
+            cfg["exchange_id"] = blob_ex
     return cfg
 
 
@@ -722,6 +722,12 @@ def get_balance():
 
         exchange_config = _build_exchange_config(credential_id, user_id, {"market_type": market_type})
         exchange_id = (exchange_config.get("exchange_id") or "").strip().lower()
+        logger.info(
+            "get_balance begin credential_id=%s exchange_id=%s market_type=%s",
+            credential_id,
+            exchange_id,
+            market_type,
+        )
         qt_rej = _reject_quick_trade_if_desktop_broker(exchange_id)
         if qt_rej is not None:
             return qt_rej
@@ -754,9 +760,10 @@ def get_balance():
                 raw = client.get_assets()
                 balance_data = _parse_balance(raw, exchange_id, market_type)
             logger.info(
-                "Balance for %s/%s: available=%.4f total=%.4f (raw keys=%s)",
+                "Balance for %s/%s: available=%.4f total=%.4f currency=%s (raw keys=%s)",
                 exchange_id, market_type,
                 balance_data.get("available", 0), balance_data.get("total", 0),
+                balance_data.get("currency", "USDT"),
                 list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
             )
         except Exception as be:
@@ -767,6 +774,101 @@ def get_balance():
     except Exception as e:
         logger.error(f"get_balance failed: {e}")
         return jsonify({"code": 0, "msg": str(e)}), 500
+
+
+def _coinbase_money_value(obj: Any, _num_fn) -> float:
+    """Coinbase Advanced Trade amounts are often { value: str, currency: str }."""
+    if isinstance(obj, dict):
+        return _num_fn(obj.get("value"))
+    return _num_fn(obj)
+
+
+def _parse_coinbase_accounts_balance(raw: Dict[str, Any], _num_fn) -> Dict[str, Any]:
+    """
+    Coinbase spot: pick a *tradable quote* balance for Quick Trade UI.
+
+    Historically we only read USDT; many Coinbase retail accounts hold **USDC** (or USD)
+    as the main stablecoin — those showed as zero. Preference order: USDT, USDC, USD,
+    then the largest non-zero available among common stables.
+    """
+    result: Dict[str, Any] = {"available": 0, "total": 0, "currency": "USDT"}
+    accounts = raw.get("accounts") if isinstance(raw, dict) else None
+    if not isinstance(accounts, list):
+        logger.info(
+            "coinbase balance parse: no accounts[] on response; top_keys=%s",
+            list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
+        )
+        return result
+
+    rows = []
+    for a in accounts:
+        if not isinstance(a, dict):
+            continue
+        ccy = str(a.get("currency") or "").strip().upper()
+        if not ccy:
+            continue
+        avail = _coinbase_money_value(a.get("available_balance"), _num_fn)
+        hold_v = _coinbase_money_value(a.get("hold"), _num_fn)
+        tot_obj = a.get("balance") or a.get("total_balance")
+        total = _coinbase_money_value(tot_obj, _num_fn) if tot_obj else avail + hold_v
+        if total <= 0 and avail <= 0 and hold_v <= 0:
+            continue
+        rows.append((ccy, avail, total if total > 0 else avail + hold_v))
+
+    # Pagination hints (brokerage accounts may be paginated)
+    next_cur = raw.get("next_cursor") or raw.get("nextCursor") or raw.get("cursor")
+    has_next = raw.get("has_next") or raw.get("hasNext")
+
+    # Log a compact snapshot (no secrets): helps diagnose "I have USDC but UI shows 0"
+    preview = []
+    for ccy, av, tot in rows[:25]:
+        preview.append(f"{ccy}:avail={av:.6g},total={tot:.6g}")
+    logger.info(
+        "coinbase balance parse: account_rows=%d preview=[%s] next_cursor=%r has_next=%r",
+        len(rows),
+        "; ".join(preview) if preview else "(none)",
+        next_cur,
+        has_next,
+    )
+
+    prefer = ("USDT", "USDC", "USD", "DAI", "EUR", "GBP")
+    by_ccy = {c: (av, tot) for c, av, tot in rows}
+
+    for ccy in prefer:
+        if ccy in by_ccy:
+            av, tot = by_ccy[ccy]
+            if av > 1e-12 or tot > 1e-12:
+                result["available"] = float(av)
+                result["total"] = float(tot)
+                result["currency"] = ccy
+                logger.info(
+                    "coinbase balance parse: selected %s available=%.8f total=%.8f",
+                    ccy,
+                    result["available"],
+                    result["total"],
+                )
+                return result
+
+    # Fallback: largest available among whatever we parsed
+    if rows:
+        ccy, av, tot = max(rows, key=lambda r: r[1])
+        result["available"] = float(av)
+        result["total"] = float(tot)
+        result["currency"] = ccy
+        logger.info(
+            "coinbase balance parse: selected fallback %s available=%.8f total=%.8f",
+            ccy,
+            result["available"],
+            result["total"],
+        )
+        return result
+
+    logger.warning(
+        "coinbase balance parse: no non-zero balances in first page (rows=%d). "
+        "If you use many sub-accounts, check API pagination / next_cursor.",
+        len(accounts),
+    )
+    return result
 
 
 def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, Any]:
@@ -802,27 +904,8 @@ def _parse_balance(raw: Any, exchange_id: str, market_type: str) -> Dict[str, An
 
         if isinstance(raw, dict):
             # Coinbase Advanced Trade: { accounts: [ { currency, available_balance: {value}, hold: {value} } ] }
-            if ex0 == "coinbaseexchange":
-                accounts = raw.get("accounts")
-                if isinstance(accounts, list):
-                    for a in accounts:
-                        if not isinstance(a, dict):
-                            continue
-                        if str(a.get("currency") or "").upper() != "USDT":
-                            continue
-
-                        def _cb_money(obj: Any) -> float:
-                            if isinstance(obj, dict):
-                                return _num(obj.get("value"))
-                            return _num(obj)
-
-                        avail = _cb_money(a.get("available_balance"))
-                        hold_v = _cb_money(a.get("hold"))
-                        tot_obj = a.get("balance") or a.get("total_balance")
-                        total = _cb_money(tot_obj) if tot_obj else avail + hold_v
-                        result["available"] = avail
-                        result["total"] = total if total > 0 else avail + hold_v
-                        return result
+            if ex0 in ("coinbaseexchange", "coinbase_exchange", "coinbase"):
+                return _parse_coinbase_accounts_balance(raw, _num)
             # Binance futures
             if "availableBalance" in raw:
                 result["available"] = float(raw.get("availableBalance") or 0)

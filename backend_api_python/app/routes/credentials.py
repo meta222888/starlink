@@ -95,6 +95,7 @@ def list_credentials():
 
 CRYPTO_EXCHANGES = [
     'binance', 'okx', 'bitget', 'bybit', 'coinbaseexchange',
+    'coinbase_exchange', 'coinbase',
     'kraken', 'kucoin', 'gate', 'deepcoin', 'htx'
 ]
 
@@ -146,7 +147,9 @@ def create_credential():
         user_id = g.user_id
         data = request.get_json() or {}
         name = (data.get('name') or '').strip()
-        exchange_id = (data.get('exchange_id') or '').strip().lower()
+        from app.services.exchange_execution import normalize_exchange_id
+
+        exchange_id = normalize_exchange_id(data.get('exchange_id') or '')
 
         if not exchange_id:
             return jsonify({'code': 0, 'msg': 'Missing exchange_id', 'data': None}), 400

@@ -100,7 +100,9 @@ LIVE_MARKET_CATEGORIES: Set[str] = {"Crypto", "USStock", "Forex"}
 # ---------------------------------------------------------------------------
 
 def _norm_exchange(value: Optional[str]) -> str:
-    return (value or "").strip().lower()
+    from app.services.exchange_execution import normalize_exchange_id
+
+    return normalize_exchange_id(value)
 
 
 def _norm_market_type(value: Optional[str]) -> str:
