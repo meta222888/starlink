@@ -29,13 +29,9 @@ from typing import Dict, Optional, Set
 # Each is assumed to support both spot and swap unless noted otherwise.
 _CRYPTO_EXCHANGES_SPOT_AND_SWAP: Set[str] = {
     "binance", "okx", "bitget", "bybit",
-    "kraken", "kucoin", "gate", "deepcoin", "htx",
+    "coinbaseexchange", "kraken", "kucoin", "gate", "deepcoin", "htx",
 }
-# Coinbase Advanced Trade has perpetual products, but this integration currently
-# only implements the standard spot order/account flow. Perpetual portfolio,
-# margin, leverage, and position handling must be wired separately before swap
-# trading can be enabled safely.
-_CRYPTO_EXCHANGES_SPOT_ONLY: Set[str] = {"coinbaseexchange"}
+_CRYPTO_EXCHANGES_SPOT_ONLY: Set[str] = set()
 
 
 def _build_broker_markets() -> Dict[str, Dict[str, Set[str]]]:
@@ -74,7 +70,7 @@ BROKER_MARKETS: Dict[str, Dict[str, Set[str]]] = _build_broker_markets()
 # margin accounts, but neither _execute_ibkr_order nor _execute_alpaca_order
 # in pending_order_worker.py implement the short path (they reject any
 # signal containing 'short').
-LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca", "coinbaseexchange"}
+LONG_ONLY_BROKERS: Set[str] = {"ibkr", "alpaca"}
 
 
 # Map bot strategy type -> markets where that bot makes sense and can
@@ -149,8 +145,8 @@ def resolve_market_type(
     """Pick a valid market_type for (broker, market), coercing common UI defaults.
 
     Clients often default crypto strategies to ``swap``. Spot-only brokers
-    (Coinbase Exchange, Alpaca crypto) only allow ``spot`` — when there is a
-    single allowed value we always return it so create/update succeeds.
+    (Alpaca crypto) only allow ``spot`` — when there is a single allowed value
+    we always return it so create/update succeeds.
     """
     ex = _norm_exchange(exchange_id)
     mc = (market_category or "").strip()
@@ -264,28 +260,13 @@ def validate_strategy_config(
                     "or to trade crypto perpetuals use Binance/OKX/Bybit/"
                     "Bitget with market_type='swap'."
                 )
-            if ex == "coinbaseexchange" and mc == "Crypto" and mt == "swap":
-                raise ValueError(
-                    "Coinbase Advanced Trade perpetuals require a dedicated "
-                    "perpetual portfolio/margin implementation, which is not "
-                    "enabled in this QuantDinger connector yet. Got market_type='swap'. "
-                    "Use market_type='spot' for Coinbase spot, or another configured "
-                    "perpetual exchange for leveraged trading."
-                )
             raise ValueError(
                 f"{ex.upper()} + {mc} does not support market_type='{mt}'. "
                 f"Allowed: {sorted(allowed_mts)}."
             )
 
-    # Rule 5: long-only brokers / spot-only integrations
+    # Rule 5: long-only brokers.
     if ex in LONG_ONLY_BROKERS and td and td != "long":
-        if ex == "coinbaseexchange":
-            raise ValueError(
-                "This QuantDinger Coinbase connector currently implements the spot "
-                "order flow only (market_type='spot', leverage=1). Coinbase "
-                "perpetual leverage requires a separate perpetual portfolio/margin "
-                "implementation before short/both directions can be enabled."
-            )
         raise ValueError(
             f"{ex.upper()} live execution in QuantDinger is currently "
             f"long-only (got trade_direction='{td}'). For short selling "

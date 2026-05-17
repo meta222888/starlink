@@ -223,10 +223,25 @@ def create_client(exchange_config: Dict[str, Any], *, market_type: str = "swap")
             api_key = _get(exchange_config, "api_key_name", "cdp_api_key_name", "key_name", "keyName")
         if not secret_key:
             secret_key = _get(exchange_config, "private_key", "privateKey", "pem")
-        if mt != "spot":
-            raise LiveTradingError("Coinbase (Advanced Trade) only supports spot market_type in this project")
+        margin_type = _get(exchange_config, "margin_type", "marginType", "td_mode", "tdMode") or "CROSS"
+        retail_portfolio_id = _get(
+            exchange_config,
+            "retail_portfolio_id",
+            "retailPortfolioId",
+            "perpetual_portfolio_id",
+            "perpetualPortfolioId",
+            "portfolio_uuid",
+            "portfolioUuid",
+        )
         # CDP keys: api_key = key name/id, secret_key = EC private key (PEM or one-line base64). Passphrase unused.
-        return CoinbaseExchangeClient(api_key=api_key, secret_key=secret_key, passphrase=passphrase)
+        return CoinbaseExchangeClient(
+            api_key=api_key,
+            secret_key=secret_key,
+            passphrase=passphrase,
+            market_type=mt,
+            margin_type=margin_type,
+            retail_portfolio_id=retail_portfolio_id,
+        )
 
     if exchange_id == "kraken":
         base_url = _get(exchange_config, "base_url", "baseUrl") or "https://api.kraken.com"

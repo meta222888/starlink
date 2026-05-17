@@ -1189,20 +1189,6 @@ class PendingOrderWorker:
         if leverage <= 0:
             leverage = 1.0
 
-        if exchange_id == "coinbaseexchange":
-            sig = str(signal_type or "").strip().lower()
-            if market_type != "spot" or leverage != 1.0 or "short" in sig:
-                err = (
-                    "coinbase_perpetual_not_enabled: this Coinbase connector currently implements "
-                    "spot orders only (market_type=spot, leverage=1). Coinbase perpetual leverage "
-                    "requires a dedicated perpetual portfolio/margin implementation."
-                )
-                self._mark_failed(order_id=order_id, error=err)
-                _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} {err}")
-                _notify_live_best_effort(status="failed", error=err)
-                append_strategy_log(strategy_id, "error", f"Order rejected: {err}")
-                return
-
         client = None
         try:
             client = create_client(exchange_config, market_type=market_type)
@@ -1675,6 +1661,10 @@ class PendingOrderWorker:
                         side=side,
                         size=remaining,
                         price=limit_price,
+                        market_type=market_type,
+                        leverage=leverage,
+                        margin_type=str((cfg.get("trading_config") or {}).get("margin_mode") or exchange_config.get("margin_type") or "CROSS"),
+                        reduce_only=reduce_only,
                         client_order_id=limit_client_oid,
                     )
                 elif isinstance(client, KrakenClient):
@@ -2021,6 +2011,10 @@ class PendingOrderWorker:
                         symbol=str(symbol),
                         side=side,
                         size=remaining,
+                        market_type=market_type,
+                        leverage=leverage,
+                        margin_type=str((cfg.get("trading_config") or {}).get("margin_mode") or exchange_config.get("margin_type") or "CROSS"),
+                        reduce_only=reduce_only,
                         client_order_id=market_client_oid,
                     )
                 elif isinstance(client, KrakenClient):

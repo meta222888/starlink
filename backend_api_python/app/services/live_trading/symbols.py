@@ -87,17 +87,26 @@ def to_bybit_symbol(symbol: str) -> str:
     return to_binance_futures_symbol(symbol)
 
 
-def to_coinbase_product_id(symbol: str) -> str:
+def to_coinbase_product_id(symbol: str, market_type: str = "spot") -> str:
     """
-    Coinbase Advanced Trade product id format: BASE-QUOTE, e.g. BTC-USDC.
+    Coinbase Advanced Trade product id format.
 
     QuantDinger's crypto UI commonly stores pairs as */USDT for cross-exchange
     compatibility, but Coinbase App spot trading is USDC-quoted for many users.
     Route USDT-quoted symbols to Coinbase's USDC products.
+
+    Coinbase International perpetual futures use product ids like
+    BTC-PERP-INTX and are queried with product_type=FUTURE +
+    contract_expiry_type=PERPETUAL.
     """
     base, quote = _split_base_quote(symbol)
     if not base or not quote:
         return symbol
+    mt = str(market_type or "spot").strip().lower()
+    if mt in ("swap", "future", "futures", "perp", "perpetual"):
+        if "-" in str(symbol or "").upper() and "PERP" in str(symbol or "").upper():
+            return str(symbol or "").upper()
+        return f"{base}-PERP-INTX"
     if quote == "USDT":
         quote = "USDC"
     return f"{base}-{quote}"

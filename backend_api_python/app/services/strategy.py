@@ -166,10 +166,10 @@ class StrategyService:
 
                 if ex in ("coinbaseexchange", "coinbase_exchange"):
                     # Advanced Trade public catalog (no legacy Exchange API access required).
-                    j = _req_json(
-                        "https://api.coinbase.com/api/v3/brokerage/market/products"
-                        "?limit=500&product_type=SPOT"
-                    )
+                    product_query = "?limit=500&product_type=SPOT"
+                    if market_type == "swap":
+                        product_query = "?limit=500&product_type=FUTURE&contract_expiry_type=PERPETUAL"
+                    j = _req_json(f"https://api.coinbase.com/api/v3/brokerage/market/products{product_query}")
                     products = j.get("products") if isinstance(j, dict) else None
                     if isinstance(products, list):
                         for it in products:
@@ -181,9 +181,11 @@ class StrategyService:
                             parts = pid.split("-")
                             if len(parts) < 2:
                                 continue
-                            quote_ccy = parts[-1].upper()
                             base_ccy = parts[0].upper()
-                            if quote_ccy == "USDT" and base_ccy:
+                            quote_ccy = parts[-1].upper()
+                            if market_type == "swap" and "PERP" in [p.upper() for p in parts] and base_ccy:
+                                symbols.append(f"{base_ccy}/USDT")
+                            elif market_type == "spot" and quote_ccy in ("USDC", "USDT") and base_ccy:
                                 symbols.append(f"{base_ccy}/USDT")
                     symbols = sorted(list(set(symbols)))
                     return {'success': True, 'message': f'Success, {len(symbols)} trading pairs', 'symbols': symbols}
@@ -653,10 +655,7 @@ class StrategyService:
                 if raw_market_type in ("futures", "future", "perp", "perpetual"):
                     raw_market_type = "swap"
                 explicit_market_type = raw_market_type in ("spot", "swap")
-                if exchange_id in ("coinbaseexchange", "coinbase_exchange"):
-                    market_candidates = ["spot"]
-                else:
-                    market_candidates = [raw_market_type] if explicit_market_type else ["spot", "swap"]
+                market_candidates = [raw_market_type] if explicit_market_type else ["spot", "swap"]
 
                 last_failure = None
                 for market_type in market_candidates:
@@ -1039,10 +1038,6 @@ class StrategyService:
                         _raw_mt, _resolved_mt, exchange_id, market_category,
                     )
                 trading_config['market_type'] = _resolved_mt
-            if exchange_id == 'coinbaseexchange':
-                trading_config['market_type'] = 'spot'
-                trading_config['leverage'] = 1
-                trading_config.setdefault('trade_direction', 'long')
         validate_strategy_config(
             exchange_id=exchange_id,
             market_category=market_category,
@@ -1436,10 +1431,6 @@ class StrategyService:
                         _eff_mt, _resolved_mt_upd, ex_id, market_category,
                     )
                 trading_config['market_type'] = _resolved_mt_upd
-            if ex_id == 'coinbaseexchange':
-                trading_config['market_type'] = 'spot'
-                trading_config['leverage'] = 1
-                trading_config.setdefault('trade_direction', 'long')
         _validate_policy_upd(
             exchange_id=ex_id,
             market_category=market_category,
@@ -1562,16 +1553,6 @@ class StrategyService:
             )
         except ValueError as e:
             return False, str(e)
-        try:
-            lev = float(leverage or 1)
-        except Exception:
-            lev = 1.0
-        if exchange_id == 'coinbaseexchange' and lev != 1.0:
-            return False, (
-                "This QuantDinger Coinbase connector currently implements spot orders only: "
-                "set market_type='spot', leverage=1, trade_direction='long'. Coinbase "
-                "perpetual leverage requires a separate perpetual portfolio/margin implementation."
-            )
         return True, ""
 
     def delete_strategy(self, strategy_id: int, user_id: int = None) -> bool:

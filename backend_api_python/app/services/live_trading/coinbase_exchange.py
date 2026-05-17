@@ -146,7 +146,7 @@ def _normalize_order_for_wait(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 class CoinbaseExchangeClient(BaseRestClient):
     """
-    Spot trading via Coinbase Advanced Trade API (retail/brokerage CDP keys).
+    Coinbase Advanced Trade API client for spot and INTX perpetual futures.
     """
 
     def __init__(
@@ -156,11 +156,20 @@ class CoinbaseExchangeClient(BaseRestClient):
         secret_key: str,
         passphrase: str = "",
         base_url: str = "",
+        market_type: str = "spot",
+        margin_type: str = "CROSS",
+        retail_portfolio_id: str = "",
         timeout_sec: float = 15.0,
     ):
         # Legacy arg `base_url` (exchange.coinbase.com) is ignored — Advanced Trade is fixed host.
         super().__init__(base_url=f"https://{CB_REST_HOST}", timeout_sec=timeout_sec)
         self.api_key = (api_key or "").strip()
+        mt = str(market_type or "spot").strip().lower()
+        self.market_type = "swap" if mt in ("swap", "future", "futures", "perp", "perpetual") else "spot"
+        self.margin_type = str(margin_type or "CROSS").strip().upper()
+        if self.margin_type not in ("CROSS", "ISOLATED"):
+            self.margin_type = "CROSS"
+        self.retail_portfolio_id = str(retail_portfolio_id or "").strip()
         self._secret_pem = ""
         if not self.api_key:
             raise LiveTradingError("Missing Coinbase CDP API key id (api_key)")
@@ -270,7 +279,18 @@ class CoinbaseExchangeClient(BaseRestClient):
         )
         return raw if isinstance(raw, dict) else {}
 
-    def _validate_market_product(self, product_id: str) -> Dict[str, Any]:
+    def list_perpetual_products(self, *, limit: int = 250) -> Dict[str, Any]:
+        return self._brokerage_request(
+            "GET",
+            f"{API_PREFIX}/products",
+            params={
+                "product_type": "FUTURE",
+                "contract_expiry_type": "PERPETUAL",
+                "limit": int(limit or 250),
+            },
+        )
+
+    def _validate_market_product(self, product_id: str, *, market_order: bool = True) -> Dict[str, Any]:
         product = self.get_product(product_id)
         if not product:
             raise LiveTradingError(f"Coinbase product not found: {product_id}")
@@ -282,7 +302,7 @@ class CoinbaseExchangeClient(BaseRestClient):
             raise LiveTradingError(
                 f"Coinbase product {product_id} is not market-tradable: {','.join(restrictions)}"
             )
-        if bool(product.get("limit_only")):
+        if market_order and bool(product.get("limit_only")):
             raise LiveTradingError(f"Coinbase product {product_id} is limit-only; market orders are disabled")
         return product
 
@@ -308,7 +328,16 @@ class CoinbaseExchangeClient(BaseRestClient):
             raise LiveTradingError(f"best_bid_ask parse failed for {product_id}: {e}") from e
 
     def place_market_order(
-        self, *, symbol: str, side: str, size: float, client_order_id: Optional[str] = None
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        client_order_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+        leverage: float = 1.0,
+        margin_type: Optional[str] = None,
+        reduce_only: bool = False,
     ) -> LiveOrderResult:
         sd = (side or "").strip().lower()
         if sd not in ("buy", "sell"):
@@ -316,12 +345,27 @@ class CoinbaseExchangeClient(BaseRestClient):
         qty = float(size or 0.0)
         if qty <= 0:
             raise LiveTradingError("Invalid size")
-        product_id = to_coinbase_product_id(symbol)
-        product = self._validate_market_product(product_id)
+        mt = str(market_type or self.market_type or "spot").strip().lower()
+        if mt in ("future", "futures", "perp", "perpetual"):
+            mt = "swap"
+        product_id = to_coinbase_product_id(symbol, market_type=mt)
+        product = self._validate_market_product(product_id, market_order=True)
         coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"
-        ioc: Dict[str, str] = {}
-        if sd == "buy":
+        order_size: Dict[str, str] = {}
+        if mt == "swap":
+            base_size = _format_increment(
+                qty,
+                product.get("base_increment") or "0.00000001",
+                field="base_size",
+            )
+            base_min = _decimal(product.get("base_min_size") or "0")
+            if base_min > 0 and _decimal(base_size) < base_min:
+                raise LiveTradingError(
+                    f"Coinbase base_size {base_size} is below {product_id} minimum {base_min}"
+                )
+            order_size["base_size"] = base_size
+        elif sd == "buy":
             mid = self._best_ask_mid(product_id)
             quote = mid * qty
             if quote <= 0:
@@ -336,7 +380,7 @@ class CoinbaseExchangeClient(BaseRestClient):
                 raise LiveTradingError(
                     f"Coinbase quote_size {quote_size} is below {product_id} minimum {quote_min}"
                 )
-            ioc["quote_size"] = quote_size
+            order_size["quote_size"] = quote_size
         else:
             base_size = _format_increment(
                 qty,
@@ -348,14 +392,24 @@ class CoinbaseExchangeClient(BaseRestClient):
                 raise LiveTradingError(
                     f"Coinbase base_size {base_size} is below {product_id} minimum {base_min}"
                 )
-            ioc["base_size"] = base_size
+            order_size["base_size"] = base_size
 
         body = {
             "client_order_id": coi,
             "product_id": product_id,
             "side": side_key,
-            "order_configuration": {"market_market_ioc": ioc},
+            "order_configuration": {
+                "market_market_fok" if mt == "swap" else "market_market_ioc": order_size
+            },
         }
+        if mt == "swap":
+            lev = float(leverage or 1.0)
+            if lev < 1:
+                lev = 1.0
+            body["leverage"] = format(Decimal(str(lev)).normalize(), "f")
+            body["margin_type"] = str(margin_type or self.margin_type or "CROSS").strip().upper()
+            if self.retail_portfolio_id:
+                body["retail_portfolio_id"] = self.retail_portfolio_id
         raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
         oid = _extract_order_id(raw if isinstance(raw, dict) else {})
         if not oid:
@@ -376,6 +430,10 @@ class CoinbaseExchangeClient(BaseRestClient):
         size: float,
         price: float,
         client_order_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+        leverage: float = 1.0,
+        margin_type: Optional[str] = None,
+        reduce_only: bool = False,
     ) -> LiveOrderResult:
         sd = (side or "").strip().lower()
         if sd not in ("buy", "sell"):
@@ -384,8 +442,11 @@ class CoinbaseExchangeClient(BaseRestClient):
         px = float(price or 0.0)
         if qty <= 0 or px <= 0:
             raise LiveTradingError("Invalid size/price")
-        product_id = to_coinbase_product_id(symbol)
-        product = self.get_product(product_id)
+        mt = str(market_type or self.market_type or "spot").strip().lower()
+        if mt in ("future", "futures", "perp", "perpetual"):
+            mt = "swap"
+        product_id = to_coinbase_product_id(symbol, market_type=mt)
+        product = self._validate_market_product(product_id, market_order=False)
         coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"
         base_size = _format_increment(
@@ -410,6 +471,14 @@ class CoinbaseExchangeClient(BaseRestClient):
                 }
             },
         }
+        if mt == "swap":
+            lev = float(leverage or 1.0)
+            if lev < 1:
+                lev = 1.0
+            body["leverage"] = format(Decimal(str(lev)).normalize(), "f")
+            body["margin_type"] = str(margin_type or self.margin_type or "CROSS").strip().upper()
+            if self.retail_portfolio_id:
+                body["retail_portfolio_id"] = self.retail_portfolio_id
         raw = self._brokerage_request("POST", f"{API_PREFIX}/orders", json_body=body)
         oid = _extract_order_id(raw if isinstance(raw, dict) else {})
         if not oid:

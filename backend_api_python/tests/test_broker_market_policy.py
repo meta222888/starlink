@@ -42,6 +42,7 @@ class TestHelpers:
 
     def test_is_long_only_broker_falsy(self):
         assert is_long_only_broker("binance") is False
+        assert is_long_only_broker("coinbaseexchange") is False
         assert is_long_only_broker("mt5") is False
         assert is_long_only_broker("") is False
         assert is_long_only_broker(None) is False
@@ -70,12 +71,14 @@ class TestHelpers:
         assert allowed_market_types("bybit", "Crypto") == {"spot", "swap"}
 
     def test_allowed_market_types_spot_only(self):
-        # Coinbase Exchange institutional + Alpaca crypto + IBKR + MT5 are spot-only.
-        assert allowed_market_types("coinbaseexchange", "Crypto") == {"spot"}
+        # Alpaca crypto + IBKR + MT5 are spot-only.
         assert allowed_market_types("alpaca", "Crypto") == {"spot"}
         assert allowed_market_types("alpaca", "USStock") == {"spot"}
         assert allowed_market_types("ibkr", "USStock") == {"spot"}
         assert allowed_market_types("mt5", "Forex") == {"spot"}
+
+    def test_allowed_market_types_coinbase_supports_perpetuals(self):
+        assert allowed_market_types("coinbaseexchange", "Crypto") == {"spot", "swap"}
 
     def test_allowed_market_types_invalid_combo(self):
         # Returns empty set rather than raising — caller decides how to react.
@@ -99,8 +102,8 @@ class TestHelpers:
 
 
 class TestResolveMarketType:
-    def test_coinbase_swap_coerced_to_spot(self):
-        assert resolve_market_type("coinbaseexchange", "Crypto", "swap") == "spot"
+    def test_coinbase_swap_preserved(self):
+        assert resolve_market_type("coinbaseexchange", "Crypto", "swap") == "swap"
 
     def test_alpaca_crypto_swap_coerced_to_spot(self):
         assert resolve_market_type("alpaca", "Crypto", "swap") == "spot"
@@ -129,8 +132,11 @@ class TestValidateLegalCombos:
         ("okx", "Crypto", "swap", "short"),
         ("bybit", "Crypto", "spot", "long"),
         ("bitget", "Crypto", "swap", "both"),
-        # Crypto spot-only exchanges
+        # Coinbase Advanced Trade spot + INTX perpetuals
         ("coinbaseexchange", "Crypto", "spot", "long"),
+        ("coinbaseexchange", "Crypto", "swap", "short"),
+        ("coinbaseexchange", "Crypto", "swap", "both"),
+        # Crypto spot examples
         ("kraken", "Crypto", "spot", "long"),
         # Alpaca dual desk
         ("alpaca", "USStock", "spot", "long"),
@@ -247,21 +253,13 @@ class TestValidateIllegalCombos:
         assert "Alpaca crypto desk is spot-only" in msg
         assert "Binance/OKX/Bybit" in msg
 
-    def test_coinbase_crypto_swap_rejected(self):
-        with pytest.raises(ValueError, match="perpetual portfolio/margin implementation"):
-            validate_strategy_config(
-                exchange_id="coinbaseexchange",
-                market_category="Crypto",
-                market_type="swap",
-            )
-
-    def test_coinbase_short_or_both_direction_rejected(self):
-        with pytest.raises(ValueError, match="currently implements the spot"):
+    def test_coinbase_short_on_spot_rejected(self):
+        with pytest.raises(ValueError, match="Short selling crypto requires market_type='swap'"):
             validate_strategy_config(
                 exchange_id="coinbaseexchange",
                 market_category="Crypto",
                 market_type="spot",
-                trade_direction="both",
+                trade_direction="short",
             )
 
     def test_ibkr_short_rejected(self):
@@ -387,6 +385,7 @@ class TestToDictSnapshot:
         # JSON-serializable: every leaf must be a list, not a set.
         assert isinstance(bm["binance"]["Crypto"], list)
         assert bm["binance"]["Crypto"] == ["spot", "swap"]
+        assert bm["coinbaseexchange"]["Crypto"] == ["spot", "swap"]
         assert bm["alpaca"]["Crypto"] == ["spot"]
 
     def test_long_only_brokers_serialized(self):

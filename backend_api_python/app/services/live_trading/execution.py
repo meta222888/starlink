@@ -215,7 +215,18 @@ def place_order_from_signal(
             client_order_id=client_order_id,
         )
     if isinstance(client, CoinbaseExchangeClient):
-        return client.place_market_order(symbol=symbol, side=side, size=qty, client_order_id=client_order_id)
+        leverage = cfg.get("leverage") or cfg.get("lever") or 1
+        margin_type = cfg.get("margin_type") or cfg.get("marginMode") or cfg.get("margin_mode") or "CROSS"
+        return client.place_market_order(
+            symbol=symbol,
+            side=side,
+            size=qty,
+            client_order_id=client_order_id,
+            market_type=mt,
+            leverage=float(leverage or 1),
+            margin_type=str(margin_type or "CROSS"),
+            reduce_only=reduce_only,
+        )
     if isinstance(client, KrakenClient):
         return client.place_market_order(symbol=symbol, side=side, size=qty, client_order_id=client_order_id)
     if isinstance(client, KucoinSpotClient):
