@@ -112,6 +112,20 @@ def _new_client_order_id(_provided: Optional[str] = None) -> str:
     return str(uuid.uuid4())
 
 
+def _coinbase_intx_permission_message(perms: Dict[str, Any]) -> str:
+    portfolio_type = str(perms.get("portfolio_type") or perms.get("portfolioType") or "").strip()
+    portfolio_uuid = str(perms.get("portfolio_uuid") or perms.get("portfolioUuid") or "").strip()
+    can_trade = perms.get("can_trade")
+    return (
+        "Coinbase perpetual futures require an Advanced Trade API key scoped to an INTX "
+        "perpetual portfolio with trade permission. The current key is scoped to "
+        f"portfolio_type={portfolio_type or 'unknown'}, portfolio_uuid={portfolio_uuid or 'unknown'}, "
+        f"can_trade={can_trade}. Please create/select a Coinbase API key for the perpetuals "
+        "portfolio in cloud.coinbase.com and make sure the account has completed perpetuals "
+        "onboarding with USDC collateral."
+    )
+
+
 def _normalize_order_for_wait(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Map Advanced Trade order fields to keys used by pending_order_worker.wait loops."""
     if not isinstance(raw, dict):
@@ -170,6 +184,7 @@ class CoinbaseExchangeClient(BaseRestClient):
         if self.margin_type not in ("CROSS", "ISOLATED"):
             self.margin_type = "CROSS"
         self.retail_portfolio_id = str(retail_portfolio_id or "").strip()
+        self._key_permissions_cache: Optional[Dict[str, Any]] = None
         self._secret_pem = ""
         if not self.api_key:
             raise LiveTradingError("Missing Coinbase CDP API key id (api_key)")
@@ -271,6 +286,22 @@ class CoinbaseExchangeClient(BaseRestClient):
     def get_accounts(self) -> Any:
         return self._brokerage_request("GET", f"{API_PREFIX}/accounts", params={"limit": 250})
 
+    def get_key_permissions(self, *, refresh: bool = False) -> Dict[str, Any]:
+        if self._key_permissions_cache is not None and not refresh:
+            return dict(self._key_permissions_cache)
+        raw = self._brokerage_request("GET", f"{API_PREFIX}/key_permissions")
+        perms = raw if isinstance(raw, dict) else {}
+        self._key_permissions_cache = dict(perms)
+        return perms
+
+    def ensure_perpetual_access(self) -> None:
+        perms = self.get_key_permissions()
+        portfolio_type = str(perms.get("portfolio_type") or perms.get("portfolioType") or "").strip().upper()
+        can_trade = perms.get("can_trade")
+        can_trade_ok = can_trade is True or str(can_trade).strip().lower() in ("true", "1", "yes")
+        if portfolio_type != "INTX" or not can_trade_ok:
+            raise LiveTradingError(_coinbase_intx_permission_message(perms))
+
     def get_product(self, product_id: str) -> Dict[str, Any]:
         raw = self._brokerage_request(
             "GET",
@@ -349,6 +380,8 @@ class CoinbaseExchangeClient(BaseRestClient):
         if mt in ("future", "futures", "perp", "perpetual"):
             mt = "swap"
         product_id = to_coinbase_product_id(symbol, market_type=mt)
+        if mt == "swap":
+            self.ensure_perpetual_access()
         product = self._validate_market_product(product_id, market_order=True)
         coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"
@@ -446,6 +479,8 @@ class CoinbaseExchangeClient(BaseRestClient):
         if mt in ("future", "futures", "perp", "perpetual"):
             mt = "swap"
         product_id = to_coinbase_product_id(symbol, market_type=mt)
+        if mt == "swap":
+            self.ensure_perpetual_access()
         product = self._validate_market_product(product_id, market_order=False)
         coi = _new_client_order_id(client_order_id)
         side_key = "BUY" if sd == "buy" else "SELL"

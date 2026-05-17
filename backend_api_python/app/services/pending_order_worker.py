@@ -1449,6 +1449,20 @@ class PendingOrderWorker:
                 return 0.0, ""
             return 0.0, ""
 
+        def _is_non_retryable_order_error(err: Exception) -> bool:
+            msg = str(err or "").lower()
+            if isinstance(client, CoinbaseExchangeClient):
+                return any(tok in msg for tok in (
+                    "intx portfolio",
+                    "portfolio_type=",
+                    "key_permissions",
+                    "does not have access",
+                    "http 403",
+                    "permission",
+                    "forbidden",
+                ))
+            return False
+
         def _current_avg() -> float:
             return float(total_quote / total_base) if total_base > 0 else 0.0
 
@@ -1911,7 +1925,14 @@ class PendingOrderWorker:
                         pass
             except LiveTradingError as e:
                 logger.warning(f"live limit phase failed: pending_id={order_id}, strategy_id={strategy_id}, cfg={safe_cfg}, err={e}")
-                # Fall back to market for full amount
+                if _is_non_retryable_order_error(e):
+                    phases["limit_error"] = str(e)
+                    self._mark_failed(order_id=order_id, error=str(e))
+                    _console_print(f"[worker] order rejected: strategy_id={strategy_id} pending_id={order_id} err={e}")
+                    _notify_live_best_effort(status="failed", error=str(e), amount_hint=amount, price_hint=ref_price)
+                    append_strategy_log(strategy_id, "error", f"Exchange order rejected ({exchange_id} {symbol} {signal_type}): {e}")
+                    return
+                # Fall back to market for recoverable limit-order failures.
                 remaining = float(amount or 0.0)
                 phases["limit_error"] = str(e)
                 append_strategy_log(strategy_id, "error", f"Exchange limit order failed ({exchange_id} {symbol}): {e}, falling back to market")
