@@ -274,7 +274,9 @@ class UserService:
     def increment_token_version(self, user_id: int) -> int:
         """
         递增用户的 token 版本号，使旧的 token 失效。
-        用于实现单一客户端登录（踢出其他设备）。
+
+        注意：普通登录不再调用此方法，避免 App 与 Web 互相踢下线。
+        仅保留给未来需要“撤销所有会话”的安全操作使用。
         
         Args:
             user_id: 用户ID
