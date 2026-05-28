@@ -106,6 +106,9 @@ def _compute_market_overview():
             key = futures[future]
             try:
                 data = future.result()
+                if key == "crypto" and isinstance(data, list):
+                    # Keep overview payload compact and aligned with homepage cards.
+                    data = data[:12]
                 result[key] = data if data else []
             except Exception as e:
                 logger.error("Failed to fetch %s: %s", key, e, exc_info=True)
