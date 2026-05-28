@@ -47,6 +47,10 @@ from app.data_providers import (
     cached_or_compute, set_cached, clear_cache, invalidate,
 )
 from app.data_providers.crypto import fetch_crypto_prices
+from app.data_providers.crypto import (
+    fetch_crypto_heatmap_coingecko,
+    fetch_crypto_heatmap_coincap,
+)
 from app.data_providers.forex import fetch_forex_pairs
 from app.data_providers.commodities import fetch_commodities
 from app.data_providers.indices import fetch_stock_indices
@@ -80,11 +84,22 @@ def _compute_market_overview():
         "indices": [], "forex": [], "crypto": [], "commodities": [],
         "timestamp": int(time.time()),
     }
+    def _overview_crypto():
+        """Prefer CoinGecko/CoinCap for reliable 24h change, then fallback."""
+        for fetcher in (fetch_crypto_heatmap_coingecko, fetch_crypto_heatmap_coincap):
+            try:
+                data = fetcher()
+                if data:
+                    return data
+            except Exception:
+                continue
+        return fetch_crypto_prices()
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(fetch_stock_indices): "indices",
             executor.submit(fetch_forex_pairs): "forex",
-            executor.submit(fetch_crypto_prices): "crypto",
+            executor.submit(_overview_crypto): "crypto",
             executor.submit(fetch_commodities): "commodities",
         }
         for future in as_completed(futures):
