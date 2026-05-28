@@ -1,29 +1,11 @@
 """Time-zone helpers for serializing datetimes to the frontend.
 
-<<<<<<< HEAD
-Most ``qd_*`` tables use ``TIMESTAMP WITHOUT TIME ZONE`` columns.  PostgreSQL
-connections in this project use a UTC session time zone, and SQLite's
-``CURRENT_TIMESTAMP`` is UTC too, so naive DB datetimes are treated as UTC
-instants.  API responses are emitted in the server/system time zone with an
-explicit offset (for example ``2026-05-17T01:18:29+08:00``), so clients display
-the same wall-clock time operators see on the host.
-=======
-Background
-----------
-Most ``qd_*`` tables use ``TIMESTAMP WITHOUT TIME ZONE`` columns.  Our PostgreSQL
-pool sets ``options="-c timezone=UTC"`` (see ``db_postgres.py``), so ``NOW()``
-and driver round-trips store a *naive* **UTC wall-clock** value.  When the
-backend serializes that ``datetime`` with ``.isoformat()`` the result has **no
-time zone suffix** (e.g. ``"2026-05-08T19:36:00"``).
+Most ``qd_*`` tables use ``TIMESTAMP WITHOUT TIME ZONE`` columns. Our
+PostgreSQL sessions run in UTC, so naive DB datetimes are treated as UTC
+wall-clock values.
 
-The frontend uses ``new Date(text)`` to parse it; modern browsers interpret a
-naive ISO string as the *browser's local time*, which yields wrong values for
-any user whose browser time zone differs from the server's.
-
-To fix this we always serialize timestamps as **UTC ISO 8601 with a ``Z``
-suffix**.  The browser then renders them in whatever locale the user is in,
-without any further work on the frontend.
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
+To keep frontend parsing unambiguous across user locales, this module always
+emits UTC ISO-8601 strings with a trailing ``Z``.
 """
 
 from __future__ import annotations
@@ -49,17 +31,6 @@ _FIXED_TZ_OFFSETS = {
     "Asia/Singapore": 8,
 }
 
-<<<<<<< HEAD
-
-def _system_tzinfo():
-    """Resolve the server/system wall-clock time zone.
-
-    Prefer the ``TZ`` env var when it is set by Docker/systemd.  Otherwise use
-    Python's view of the host local time zone.
-    """
-    name = (os.getenv("TZ") or "").strip()
-    if name and ZoneInfo is not None:
-=======
 def _db_naive_tzinfo() -> timezone:
     """Timezone for naive ``datetime`` values read from PostgreSQL.
 
@@ -70,14 +41,13 @@ def _db_naive_tzinfo() -> timezone:
     if override.upper() in ("UTC", "GMT", "ETC/UTC", "ETC/GMT"):
         return timezone.utc
     if ZoneInfo is not None:
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
         try:
             return ZoneInfo(override)  # type: ignore[return-value]
         except Exception:
             pass
-    if name in _FIXED_TZ_OFFSETS:
-        return timezone(timedelta(hours=_FIXED_TZ_OFFSETS[name]))
-    match = re.fullmatch(r"(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?", name)
+    if override in _FIXED_TZ_OFFSETS:
+        return timezone(timedelta(hours=_FIXED_TZ_OFFSETS[override]))
+    match = re.fullmatch(r"(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?", override)
     if match:
         sign = 1 if match.group(1) == "+" else -1
         hours = int(match.group(2))
@@ -88,25 +58,19 @@ def _db_naive_tzinfo() -> timezone:
 
 
 def to_system_iso(value: Any) -> Optional[str]:
-    """Convert a value to a system-local ISO 8601 string with an offset.
+    """Convert a value to a UTC ISO-8601 string.
 
     Accepts ``datetime``, ISO strings, numeric epoch seconds, or ``None``.
     Returns ``None`` for falsy inputs that aren't valid timestamps.
 
     Rules
     -----
-<<<<<<< HEAD
-    * Aware ``datetime`` → converted to the system time zone.
-    * Naive ``datetime`` → assumed to be a UTC DB timestamp, then converted to
-      the system time zone.
-=======
     * Aware ``datetime`` → converted to UTC.
     * Naive ``datetime`` → assumed to be UTC wall clock from our PG session
       (``options=-c timezone=UTC``), then converted/emitted as UTC ``Z``.
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
     * Numeric input → treated as epoch seconds (or milliseconds when too large).
-    * String input that parses as ISO 8601 → re-emitted in the system time
-      zone.  If the string has no time-zone designator, treat it as UTC.
+    * String input that parses as ISO 8601 → re-emitted in UTC. If the string
+      has no time-zone designator, treat it as DB naive timezone.
     * Anything else → ``None`` (the route can decide to fall back to ``str()``).
     """
     if value is None or value == "":
@@ -147,20 +111,12 @@ def to_system_iso(value: Any) -> Optional[str]:
         return None
 
     if dt.tzinfo is None:
-<<<<<<< HEAD
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt_system = dt.astimezone(_system_tzinfo())
-    # Drop microseconds for smaller, cleaner payloads while keeping an explicit
-    # offset so browser parsing remains unambiguous.
-    return dt_system.replace(microsecond=0).isoformat()
-=======
         dt = dt.replace(tzinfo=_db_naive_tzinfo())
     dt_utc = dt.astimezone(timezone.utc)
     # Always emit with trailing Z and second-precision (drop microseconds for
     # smaller, cleaner payloads).  ISO 8601 with Z is unambiguous for all
     # browsers.
     return dt_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
 
 
 def to_utc_iso(value: Any) -> Optional[str]:
