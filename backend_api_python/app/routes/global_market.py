@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from app.utils.logger import get_logger
 from app.utils.auth import login_required
@@ -61,6 +61,10 @@ from app.data_providers.opportunities import (
     analyze_opportunities_crypto, analyze_opportunities_stocks,
     analyze_opportunities_local_stocks, analyze_opportunities_forex,
 )
+from app.config.api_keys import APIKeys
+from app.utils.config_loader import load_addon_config
+from app.utils.market_visibility import filter_market_items
+from app.data.market_symbols_seed import get_hot_symbols as seed_get_hot_symbols
 
 logger = get_logger(__name__)
 
@@ -325,6 +329,163 @@ def trading_opportunities():
         return jsonify({"code": 1, "msg": "success", "data": data or []})
     except Exception as e:
         logger.error("trading_opportunities failed: %s", e, exc_info=True)
+        return jsonify({"code": 0, "msg": str(e), "data": None}), 500
+
+
+def _has_configured_market_credentials() -> bool:
+    """Require at least one backend-configured provider credential.
+
+    The snapshot endpoint is intended for authenticated server-side use and
+    should not become an anonymous "free market data relay". We therefore
+    require operators to configure at least one upstream credential in
+    addon config or env before serving this payload.
+    """
+    configured_keys = (
+        "FINNHUB_API_KEY",
+        "TWELVE_DATA_API_KEY",
+        "TIINGO_API_KEY",
+        "COINGLASS_API_KEY",
+        "CRYPTOQUANT_API_KEY",
+        "ADANOS_API_KEY",
+    )
+    if any(APIKeys.is_configured(k) for k in configured_keys):
+        return True
+
+    try:
+        cfg = load_addon_config()
+    except Exception:
+        cfg = {}
+    sections = ("finnhub", "twelve_data", "tiingo", "coinglass", "cryptoquant", "adanos")
+    for section in sections:
+        api_key = ((cfg.get(section) or {}).get("api_key") or "").strip()
+        if api_key:
+            return True
+    return False
+
+
+def _compute_market_types():
+    desired_order = ["USStock", "CNStock", "HKStock", "Crypto", "Forex", "Futures", "MOEX"]
+    order_rank = {v: i for i, v in enumerate(desired_order)}
+    data = filter_market_items(
+        [{"value": v, "i18nKey": f"dashboard.analysis.market.{v}"} for v in desired_order],
+        key="value",
+    )
+    data.sort(key=lambda it: order_rank.get((it or {}).get("value"), 10000))
+    return data
+
+
+def _compute_hot_symbols_by_market():
+    out = {}
+    for item in _compute_market_types():
+        market = (item or {}).get("value")
+        if not market:
+            continue
+        try:
+            out[market] = seed_get_hot_symbols(market=market, limit=10)
+        except Exception as e:
+            logger.warning("hot symbols fetch failed for %s: %s", market, e)
+            out[market] = []
+    return out
+
+
+def _compute_current_user_profile():
+    user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return None
+    profile = None
+    try:
+        from app.services.user_service import get_user_service
+        profile = get_user_service().get_user_by_id(user_id)
+    except Exception as e:
+        logger.debug("user profile fallback for %s: %s", user_id, e)
+    if isinstance(profile, dict):
+        return {
+            "id": profile.get("id"),
+            "username": profile.get("username"),
+            "nickname": profile.get("nickname", "User"),
+            "email": profile.get("email"),
+            "avatar": profile.get("avatar", "/avatar2.jpg"),
+            "timezone": str(profile.get("timezone") or "").strip(),
+            "role": profile.get("role", "user"),
+        }
+    return {
+        "id": user_id,
+        "username": getattr(g, "user", None),
+        "nickname": "User",
+        "email": None,
+        "avatar": "/avatar2.jpg",
+        "timezone": "",
+        "role": getattr(g, "user_role", "user"),
+    }
+
+
+@global_market_bp.route("/ai-asset-analysis/snapshot", methods=["GET"])
+@login_required
+def ai_asset_analysis_snapshot():
+    """Return homepage snapshot data for /#/ai-asset-analysis.
+
+    Excludes personal watchlist rows by design. Every block is served through
+    cache wrappers to avoid direct/stampeding upstream pulls.
+    """
+    try:
+        if not _has_configured_market_credentials():
+            return jsonify({
+                "code": 0,
+                "msg": "No backend market-data credential configured. Configure at least one provider API key first.",
+                "data": None,
+            }), 503
+
+        force = request.args.get("force", "").lower() in ("true", "1")
+        user_id = getattr(g, "user_id", 0)
+        payload = {
+            "user_info": cached_or_compute(
+                f"ai_asset_snapshot_user:{user_id}",
+                _compute_current_user_profile,
+                ttl=60,
+                force=force,
+            ),
+            "market_types": cached_or_compute(
+                "ai_asset_snapshot_market_types",
+                _compute_market_types,
+                ttl=600,
+                force=force,
+            ) or [],
+            "hot_symbols": cached_or_compute(
+                "ai_asset_snapshot_hot_symbols",
+                _compute_hot_symbols_by_market,
+                ttl=1800,
+                force=force,
+            ) or {},
+            "opportunities": cached_or_compute(
+                "trading_opportunities",
+                _compute_trading_opportunities,
+                force=force,
+            ) or [],
+            "market_sentiment": cached_or_compute(
+                "market_sentiment",
+                _compute_market_sentiment,
+                force=force,
+            ) or {},
+            "market_overview": cached_or_compute(
+                "market_overview",
+                _compute_market_overview,
+                force=force,
+            ) or {},
+            "market_heatmap": cached_or_compute(
+                "market_heatmap",
+                generate_heatmap_data,
+                force=force,
+            ) or {},
+            "economic_calendar": cached_or_compute(
+                "economic_calendar",
+                get_economic_calendar,
+                force=force,
+            ) or [],
+            "timestamp": int(time.time()),
+        }
+        return jsonify({"code": 1, "msg": "success", "data": payload})
+    except Exception as e:
+        logger.error("ai_asset_analysis_snapshot failed: %s", e, exc_info=True)
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
