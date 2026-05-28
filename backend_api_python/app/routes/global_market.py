@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, jsonify, request
 
 from app.utils.logger import get_logger
 from app.utils.auth import login_required
@@ -388,37 +388,6 @@ def _compute_hot_symbols_by_market():
     return out
 
 
-def _compute_current_user_profile():
-    user_id = getattr(g, "user_id", None)
-    if not user_id:
-        return None
-    profile = None
-    try:
-        from app.services.user_service import get_user_service
-        profile = get_user_service().get_user_by_id(user_id)
-    except Exception as e:
-        logger.debug("user profile fallback for %s: %s", user_id, e)
-    if isinstance(profile, dict):
-        return {
-            "id": profile.get("id"),
-            "username": profile.get("username"),
-            "nickname": profile.get("nickname", "User"),
-            "email": profile.get("email"),
-            "avatar": profile.get("avatar", "/avatar2.jpg"),
-            "timezone": str(profile.get("timezone") or "").strip(),
-            "role": profile.get("role", "user"),
-        }
-    return {
-        "id": user_id,
-        "username": getattr(g, "user", None),
-        "nickname": "User",
-        "email": None,
-        "avatar": "/avatar2.jpg",
-        "timezone": "",
-        "role": getattr(g, "user_role", "user"),
-    }
-
-
 @global_market_bp.route("/ai-asset-analysis/snapshot", methods=["GET"])
 @login_required
 def ai_asset_analysis_snapshot():
@@ -436,14 +405,7 @@ def ai_asset_analysis_snapshot():
             }), 503
 
         force = request.args.get("force", "").lower() in ("true", "1")
-        user_id = getattr(g, "user_id", 0)
         payload = {
-            "user_info": cached_or_compute(
-                f"ai_asset_snapshot_user:{user_id}",
-                _compute_current_user_profile,
-                ttl=60,
-                force=force,
-            ),
             "market_types": cached_or_compute(
                 "ai_asset_snapshot_market_types",
                 _compute_market_types,
