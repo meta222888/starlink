@@ -5,7 +5,18 @@ from app.data.market_symbols_seed import (
     get_hot_symbols as seed_get_hot_symbols,
     search_symbols as seed_search_symbols,
 )
+from app.data_providers import cached_or_compute
+from app.data_providers.heatmap import generate_heatmap_data
+from app.data_providers.news import get_economic_calendar
 from app.services.kline import KlineService
+from app.routes.global_market import (
+    _compute_market_overview,
+    _compute_market_sentiment,
+    _compute_market_types,
+    _compute_hot_symbols_by_market,
+    _compute_trading_opportunities,
+    _has_configured_market_credentials,
+)
 from app.utils.agent_auth import (
     SCOPE_R, agent_required, instrument_allowed, market_allowed,
 )
@@ -153,3 +164,83 @@ def price():
     except Exception as exc:
         logger.error(f"agent_v1/price failed: {exc}", exc_info=True)
         return error(500, "price fetch failed", details=str(exc), retriable=True, http=502)
+
+
+@agent_v1_bp.route("/markets/ai-asset-snapshot", methods=["GET"])
+@agent_required(SCOPE_R)
+def ai_asset_snapshot():
+    """Aggregate snapshot for AI asset analysis homepage via Agent Token.
+
+    Response shape intentionally mirrors `/api/global-market/ai-asset-analysis/snapshot`
+    but is agent-scoped and returned in Agent v1 envelope format.
+    """
+    if not _has_configured_market_credentials():
+        return error(
+            503,
+            "No backend market-data credential configured. Configure at least one provider API key first.",
+            http=503,
+        )
+
+    force = (request.args.get("force") or "").strip().lower() in ("1", "true")
+    market_types = cached_or_compute(
+        "ai_asset_snapshot_market_types",
+        _compute_market_types,
+        ttl=600,
+        force=force,
+    ) or []
+    allowed_markets = {
+        m.get("value")
+        for m in market_types
+        if isinstance(m, dict) and m.get("value") and market_allowed(m.get("value"))
+    }
+    filtered_market_types = [m for m in market_types if isinstance(m, dict) and m.get("value") in allowed_markets]
+
+    hot_symbols_all = cached_or_compute(
+        "ai_asset_snapshot_hot_symbols",
+        _compute_hot_symbols_by_market,
+        ttl=1800,
+        force=force,
+    ) or {}
+    hot_symbols = {
+        market: symbols
+        for market, symbols in hot_symbols_all.items()
+        if market in allowed_markets
+    }
+
+    opportunities = cached_or_compute(
+        "trading_opportunities",
+        _compute_trading_opportunities,
+        force=force,
+    ) or []
+    if isinstance(opportunities, list):
+        opportunities = [
+            o for o in opportunities
+            if isinstance(o, dict) and o.get("market") in allowed_markets
+        ]
+
+    payload = {
+        "market_types": filtered_market_types,
+        "hot_symbols": hot_symbols,
+        "opportunities": opportunities,
+        "market_sentiment": cached_or_compute(
+            "market_sentiment",
+            _compute_market_sentiment,
+            force=force,
+        ) or {},
+        "market_overview": cached_or_compute(
+            "market_overview",
+            _compute_market_overview,
+            force=force,
+        ) or {},
+        "market_heatmap": cached_or_compute(
+            "market_heatmap",
+            generate_heatmap_data,
+            force=force,
+        ) or {},
+        "economic_calendar": cached_or_compute(
+            "economic_calendar",
+            get_economic_calendar,
+            force=force,
+        ) or [],
+    }
+    return envelope(payload)

@@ -4,9 +4,23 @@
 
 - 接口名称：AI 资产分析首页快照
 - 请求方法：`GET`
-- 请求路径：`/api/global-market/ai-asset-analysis/snapshot`
+- 请求路径：`/api/agent/v1/markets/ai-asset-snapshot`
 - Content-Type：`application/json`
 - 鉴权方式：登录态鉴权（Bearer Token 或有效会话）
+
+## 1.1 Agent Token 调用入口
+
+如需使用 Agent Token（长期凭据），请调用 Agent Gateway 路由：
+
+- 请求方法：`GET`
+- 请求路径：`/api/agent/v1/markets/ai-asset-snapshot`
+- 鉴权方式：`Authorization: Bearer qd_agent_xxx`
+- 说明：
+  - 需具备 `R` scope
+  - 返回字段与本接口核心数据一致，但外层为 Agent v1 统一 envelope：
+    - `code`（成功为 `0`）
+    - `message`
+    - `data`
 
 ## 2. 查询参数
 
