@@ -1010,17 +1010,13 @@ class StrategyService:
 
         indicator_config = payload.get('indicator_config') or {}
         trading_config = payload.get('trading_config') or {}
-        from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
-
-<<<<<<< HEAD
         from app.services.exchange_execution import (
+            coalesce_exchange_config_from_payload,
             credential_error,
             get_credential_id,
             resolve_exchange_config,
         )
-=======
         exchange_config = coalesce_exchange_config_from_payload(payload)
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
 
         resolved_ex_cfg = resolve_exchange_config(
             exchange_config if isinstance(exchange_config, dict) else {},
@@ -1410,23 +1406,19 @@ class StrategyService:
         if payload.get('rebalance_frequency') is not None:
             trading_config['rebalance_frequency'] = payload.get('rebalance_frequency')
 
-<<<<<<< HEAD
         # Resolve effective execution_mode (payload may override existing).
         _upd_exec_mode = ((payload.get('execution_mode') if payload.get('execution_mode') is not None
                            else existing.get('execution_mode')) or 'signal').strip().lower()
         from app.services.exchange_execution import (
+            coalesce_exchange_config_from_payload,
             credential_error as _credential_error_upd,
             resolve_exchange_config as _resolve_ex_upd,
         )
-=======
-        from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config as _resolve_ex_upd
-
         exchange_config = coalesce_exchange_config_from_payload({
             **payload,
             'exchange_config': exchange_config,
             'trading_config': trading_config,
         })
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
 
         _merged_ex = _resolve_ex_upd(
             exchange_config if isinstance(exchange_config, dict) else {},

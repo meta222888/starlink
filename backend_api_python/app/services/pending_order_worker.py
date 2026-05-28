@@ -1494,7 +1494,6 @@ class PendingOrderWorker:
                 if (not fee_ccy) and ccy:
                     fee_ccy = str(ccy or "")
 
-<<<<<<< HEAD
         def _fetch_fee_best_effort(*, order_id0: str, client_order_id0: str) -> Tuple[float, str]:
             """
             Some exchanges (notably Binance) do not expose commissions on order endpoints.
@@ -1525,9 +1524,6 @@ class PendingOrderWorker:
                     "forbidden",
                 ))
             return False
-
-=======
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
         def _current_avg() -> float:
             return float(total_quote / total_base) if total_base > 0 else 0.0
 

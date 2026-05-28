@@ -2188,14 +2188,6 @@ def get_strategy_logs():
             if msg.startswith('tick price=') or msg.startswith('tick price '):
                 continue
             ts = rr.get('timestamp')
-<<<<<<< HEAD
-            if ts is not None and hasattr(ts, 'isoformat'):
-                from app.utils.timeutil import to_system_iso
-                rr['timestamp'] = to_system_iso(ts)
-            out.append(rr)
-        logs = out
-        return jsonify({'code': 1, 'msg': 'success', 'data': logs})
-=======
             if ts is not None:
                 from app.utils.timeutil import to_utc_iso
                 iso = to_utc_iso(ts)
@@ -2203,7 +2195,6 @@ def get_strategy_logs():
             out.append(rr)
         # Already ORDER BY id DESC — newest first for the UI log panel.
         return jsonify({'code': 1, 'msg': 'success', 'data': out})
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
     except Exception as e:
         if PgUndefinedTable is not None and isinstance(e, PgUndefinedTable):
             return jsonify({'code': 1, 'msg': 'success', 'data': []})

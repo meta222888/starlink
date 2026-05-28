@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-<<<<<<< HEAD
 import os
-from typing import Optional
-=======
 from datetime import datetime, timezone
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
+from typing import Optional
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger

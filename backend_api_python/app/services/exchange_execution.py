@@ -256,13 +256,12 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
     return merged
 
 
-<<<<<<< HEAD
 def credential_error(resolved_config: Dict[str, Any]) -> str:
     """Return a human-readable saved-credential error, if any."""
     if not isinstance(resolved_config, dict):
         return ""
     return str(resolved_config.get("_credential_error") or "").strip()
-=======
+
 def coalesce_exchange_config_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Build a single exchange_config dict from all common payload shapes.
 
@@ -317,6 +316,5 @@ def coalesce_exchange_config_from_payload(payload: Dict[str, Any]) -> Dict[str, 
             ex_cfg["credential_id"] = cred
 
     return ex_cfg
->>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
 
 
