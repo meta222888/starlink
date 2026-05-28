@@ -224,7 +224,7 @@ This is the recommended mode for the open-source edition.
 
 Why:
 
-- The open-source frontend is shipped as prebuilt `frontend/dist`
+- The frontend is pulled as a prebuilt image (`ghcr.io/brokermr810/quantdinger-frontend`) — no local build
 - The frontend container already proxies `/api/*` to `backend:5000` inside Docker
 - Only one public domain and one TLS configuration are needed
 
@@ -360,22 +360,19 @@ docker-compose logs backend --tail=100
 docker-compose restart frontend
 ```
 
-### 4. Frontend build fails with `COPY frontend/dist ... not found`
+### 4. `docker compose up` fails to pull `quantdinger-frontend`
 
-This usually means `.dockerignore` excluded `frontend/dist`, while the current open-source frontend image copies that prebuilt directory directly.
-
-Check:
+The frontend image lives on GHCR (`ghcr.io/brokermr810/quantdinger-frontend`). If the pull fails:
 
 ```bash
-cat .dockerignore
-ls frontend/dist
+docker pull ghcr.io/brokermr810/quantdinger-frontend:latest
 ```
 
-Make sure `.dockerignore` does NOT contain:
+Common causes:
 
-```text
-frontend/dist
-```
+- Image visibility set to private — switch the package to public in GitHub, or `docker login ghcr.io` first
+- Network firewall blocks GHCR — set a mirror prefix via `FRONTEND_IMAGE` in project-root `.env`
+- Tag pinned by `IMAGE_TAG` (or `BACKEND_TAG` / `FRONTEND_TAG`) no longer exists — fall back to `latest` or pick an existing semver tag
 
 ### 5. Saving settings fails with `Read-only file system: '/app/.env'`
 

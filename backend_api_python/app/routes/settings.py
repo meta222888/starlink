@@ -7,6 +7,7 @@ import os
 import re
 import importlib
 from flask import Blueprint, request, jsonify
+from app._version import APP_VERSION
 from app.utils.logger import get_logger
 from app.utils.config_loader import clear_config_cache
 from app.utils.auth import login_required, admin_required
@@ -136,13 +137,6 @@ CONFIG_SCHEMA = {
                 'type': 'text',
                 'default': 'QuantDinger',
                 'description': 'Product name shown in the browser tab title and footer copyright.'
-            },
-            {
-                'key': 'BRAND_APP_VERSION',
-                'label': 'App Version',
-                'type': 'text',
-                'default': '3.0.7',
-                'description': 'Version label shown in the sidebar footer ("V3.0.7"). Frontend bundle version stays unchanged.'
             },
             {
                 'key': 'BRAND_COPYRIGHT',
@@ -655,6 +649,20 @@ CONFIG_SCHEMA = {
                 'description': 'Wait time for limit order fill before switching to market order'
             },
             {
+                'key': 'SPOT_CLOSE_SAFETY_RATIO',
+                'label': 'Spot Close Safety Ratio',
+                'type': 'number',
+                'default': '0.998',
+                'description': 'When closing spot long, sell qty is capped to (exchange free base × this ratio), then floored to lot step. Lower if full close fails due to fees (valid range 0.9–1.0).'
+            },
+            {
+                'key': 'SPOT_OPEN_QUOTE_BUFFER',
+                'label': 'Spot Open Quote Buffer',
+                'type': 'number',
+                'default': '0.995',
+                'description': 'Fraction of USDT/notional used on spot open (reserve headroom for buy fees). Example 0.995 uses 99.5% of allocated quote (valid range 0.9–1.0).'
+            },
+            {
                 'key': 'ALLOW_LOCAL_DESKTOP_BROKERS',
                 'label': 'Allow IBKR / MT5 (local desktop brokers)',
                 'type': 'boolean',
@@ -703,10 +711,10 @@ CONFIG_SCHEMA = {
                 'key': 'CCXT_DEFAULT_EXCHANGE',
                 'label': 'Default Crypto Exchange',
                 'type': 'text',
-                'default': 'coinbase',
+                'default': 'binance',
                 'link': 'https://github.com/ccxt/ccxt#supported-cryptocurrency-exchange-markets',
                 'link_text': 'settings.link.supportedExchanges',
-                'description': 'Default exchange for crypto data (binance, coinbase, okx, etc.)'
+                'description': 'Default exchange for crypto market data (binance recommended for BTC/USDT; coinbase uses USD pairs)'
             },
             {
                 'key': 'FINNHUB_API_KEY',
@@ -1478,7 +1486,6 @@ def get_public_config():
 # fresh install still ships with sane copy / links instead of blanks.
 _BRAND_DEFAULTS = {
     'app_name': 'QuantDinger',
-    'app_version': '3.0.7',
     'copyright': '© 2025-2026 QuantDinger. All rights reserved.',
     'contact_email': 'brokermr810@gmail.com',
     'contact_support_url': 'https://t.me/quantdinger',
@@ -1532,7 +1539,7 @@ def get_brand_config():
         'msg': 'success',
         'data': {
             'app_name': _brand_env('BRAND_APP_NAME', 'app_name'),
-            'app_version': _brand_env('BRAND_APP_VERSION', 'app_version'),
+            'app_version': APP_VERSION,
             'copyright': _brand_env('BRAND_COPYRIGHT', 'copyright'),
             'logos': {
                 'light': _brand_env('BRAND_LOGO_LIGHT_URL'),

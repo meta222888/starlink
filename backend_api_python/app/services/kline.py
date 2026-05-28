@@ -24,7 +24,9 @@ class KlineService:
         symbol: str,
         timeframe: str,
         limit: int = 300,
-        before_time: Optional[int] = None
+        before_time: Optional[int] = None,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         获取K线数据
@@ -35,13 +37,17 @@ class KlineService:
             timeframe: 时间周期
             limit: 数据条数
             before_time: 获取此时间之前的数据
+            exchange_id: 加密货币运行中策略 — 策略绑定的交易所
+            market_type: 加密货币运行中策略 — spot 或 swap
             
         Returns:
             K线数据列表
         """
+        ex_key = (exchange_id or "").strip().lower()
+        mt_key = (market_type or "").strip().lower()
         # 构建缓存键（历史数据不缓存）
         if not before_time:
-            cache_key = f"kline:{market}:{symbol}:{timeframe}:{limit}"
+            cache_key = f"kline:{market}:{ex_key}:{mt_key}:{symbol}:{timeframe}:{limit}"
             cached = self.cache.get(cache_key)
             if cached:
                 # logger.info(f"命中缓存: {cache_key}")
@@ -53,7 +59,9 @@ class KlineService:
             symbol=symbol,
             timeframe=timeframe,
             limit=limit,
-            before_time=before_time
+            before_time=before_time,
+            exchange_id=exchange_id,
+            market_type=market_type,
         )
         
         # 设置缓存（仅最新数据）
@@ -71,7 +79,14 @@ class KlineService:
             return klines[-1]
         return None
     
-    def get_realtime_price(self, market: str, symbol: str, force_refresh: bool = False) -> Dict[str, Any]:
+    def get_realtime_price(
+        self,
+        market: str,
+        symbol: str,
+        force_refresh: bool = False,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         获取实时价格（优先使用 ticker API，降级使用分钟 K 线）
         
@@ -93,7 +108,9 @@ class KlineService:
             }
         """
         # 构建缓存键（短时间缓存，避免频繁请求）
-        cache_key = f"realtime_price:{market}:{symbol}"
+        ex_key = (exchange_id or "").strip().lower()
+        mt_key = (market_type or "").strip().lower()
+        cache_key = f"realtime_price:{market}:{ex_key}:{mt_key}:{symbol}"
         
         # 如果不是强制刷新，尝试使用缓存
         if not force_refresh:
@@ -114,7 +131,9 @@ class KlineService:
         
         # 优先尝试使用 ticker API 获取实时价格
         try:
-            ticker = DataSourceFactory.get_ticker(market, symbol)
+            ticker = DataSourceFactory.get_ticker(
+                market, symbol, exchange_id=exchange_id, market_type=market_type
+            )
             if ticker and ticker.get('last', 0) > 0:
                 result = {
                     'price': ticker.get('last', 0),
@@ -134,7 +153,9 @@ class KlineService:
         
         # 降级：使用 1 分钟 K 线
         try:
-            klines = self.get_kline(market, symbol, '1m', 2)
+            klines = self.get_kline(
+                market, symbol, '1m', 2, exchange_id=exchange_id, market_type=market_type
+            )
             if klines and len(klines) > 0:
                 latest = klines[-1]
                 prev_close = klines[-2]['close'] if len(klines) > 1 else latest.get('open', 0)

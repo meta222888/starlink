@@ -40,6 +40,11 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _net_trade_pnl(t: Dict[str, Any]) -> float:
+    """Realised P&L after exchange-synced commission (USDT-margined pairs)."""
+    return _safe_float(t.get("profit"), 0.0) - _safe_float(t.get("commission"), 0.0)
+
+
 def _format_datetime(dt: Any) -> Any:
     """Convert a datetime to system-local ISO 8601 for the frontend.
 
@@ -94,36 +99,7 @@ def _is_bot_strategy(row: Dict[str, Any]) -> bool:
         return False
 
 
-def _calc_unrealized_pnl(side: str, entry_price: float, current_price: float, size: float) -> float:
-    try:
-        ep = float(entry_price or 0.0)
-        cp = float(current_price or 0.0)
-        sz = float(size or 0.0)
-        if ep <= 0 or cp <= 0 or sz <= 0:
-            return 0.0
-        s = (side or "").strip().lower()
-        if s == "short":
-            return (ep - cp) * sz
-        return (cp - ep) * sz
-    except Exception:
-        return 0.0
-
-
-def _calc_pnl_percent(entry_price: float, size: float, pnl: float, leverage: float = 1.0, market_type: str = "spot") -> float:
-    try:
-        denom = float(entry_price or 0.0) * float(size or 0.0)
-        if denom <= 0:
-            return 0.0
-        lev = float(leverage or 1.0)
-        if lev <= 0:
-            lev = 1.0
-        mt = str(market_type or "").strip().lower()
-        # Margin PnL% (user expectation): pnl / (notional / leverage)
-        # = pnl / notional * leverage
-        mult = lev if mt in ("swap", "futures", "future", "perp", "perpetual") else 1.0
-        return float(pnl) / denom * 100.0 * float(mult)
-    except Exception:
-        return 0.0
+from app.utils.pnl import calc_pnl_percent, calc_unrealized_pnl
 
 
 def _compute_performance_stats(trades: List[Dict[str, Any]], initial_capital: float = 0.0) -> Dict[str, Any]:
@@ -190,7 +166,7 @@ def _compute_performance_stats(trades: List[Dict[str, Any]], initial_capital: fl
     if total_trades == 0:
         return empty_stats
 
-    profits = [_safe_float(t.get("profit"), 0.0) for t in closing_trades]
+    profits = [_net_trade_pnl(t) for t in closing_trades]
     wins = [p for p in profits if p > 0]
     losses = [p for p in profits if p < 0]
 
@@ -267,7 +243,7 @@ def _compute_performance_stats(trades: List[Dict[str, Any]], initial_capital: fl
         if ts <= 0:
             continue
         day = time.strftime("%Y-%m-%d", time.localtime(ts))
-        profit = _safe_float(t.get("profit"), 0.0)
+        profit = _net_trade_pnl(t)
         day_profits[day] = day_profits.get(day, 0.0) + profit
 
     best_day = max(day_profits.values()) if day_profits else 0.0
@@ -324,7 +300,7 @@ def _compute_strategy_stats(trades: List[Dict[str, Any]], strategies: List[Dict[
     for sid, strades in sid_to_trades.items():
         capital = sid_to_capital.get(sid, 0.0)
         stats = _compute_performance_stats(strades, initial_capital=capital)
-        total_pnl = sum(_safe_float(t.get("profit"), 0.0) for t in strades)
+        total_pnl = sum(_net_trade_pnl(t) for t in strades)
         roi = (total_pnl / capital * 100) if capital > 0 else 0.0
 
         result.append({
@@ -408,13 +384,13 @@ def summary():
         current_positions: List[Dict[str, Any]] = []
         total_unrealized_pnl = 0.0
         for r in rows:
-            pnl = _calc_unrealized_pnl(
+            pnl = calc_unrealized_pnl(
                 side=str(r.get("side") or ""),
                 entry_price=float(r.get("entry_price") or 0.0),
                 current_price=float(r.get("current_price") or 0.0),
                 size=float(r.get("size") or 0.0),
             )
-            pct = _calc_pnl_percent(
+            pct = calc_pnl_percent(
                 float(r.get("entry_price") or 0.0),
                 float(r.get("size") or 0.0),
                 pnl,
@@ -502,7 +478,7 @@ def summary():
         strategy_stats = _compute_strategy_stats(recent_trades, strategies)
 
         # Include realized PnL from trades
-        total_realized_pnl = sum(_safe_float(t.get("profit"), 0.0) for t in recent_trades)
+        total_realized_pnl = sum(_net_trade_pnl(t) for t in recent_trades)
         total_pnl = float(total_unrealized_pnl + total_realized_pnl)
         total_equity = float(total_initial_capital + total_pnl)
 
@@ -514,10 +490,7 @@ def summary():
             if ts <= 0:
                 continue
             day = time.strftime("%Y-%m-%d", time.localtime(ts))
-            try:
-                p = float(trow.get("profit") or 0.0)
-            except Exception:
-                p = 0.0
+            p = _net_trade_pnl(trow)
             day_to_profit[day] = float(day_to_profit.get(day, 0.0) + p)
         daily_pnl_chart = [{"date": d, "profit": float(v)} for d, v in sorted(day_to_profit.items())]
 
@@ -537,10 +510,7 @@ def summary():
             if ts <= 0:
                 continue
             month = time.strftime("%Y-%m", time.localtime(ts))
-            try:
-                p = float(trow.get("profit") or 0.0)
-            except Exception:
-                p = 0.0
+            p = _net_trade_pnl(trow)
             month_to_profit[month] = month_to_profit.get(month, 0.0) + p
         monthly_returns = [{"month": m, "profit": round(v, 2)} for m, v in sorted(month_to_profit.items())]
 
@@ -553,7 +523,7 @@ def summary():
                 continue
             hour = int(time.strftime("%H", time.localtime(ts)))
             hour_to_count[hour] = hour_to_count.get(hour, 0) + 1
-            hour_to_profit[hour] = hour_to_profit.get(hour, 0.0) + _safe_float(trow.get("profit"), 0.0)
+            hour_to_profit[hour] = hour_to_profit.get(hour, 0.0) + _net_trade_pnl(trow)
         hourly_distribution = [
             {"hour": h, "count": hour_to_count.get(h, 0), "profit": round(hour_to_profit.get(h, 0.0), 2)}
             for h in range(24)

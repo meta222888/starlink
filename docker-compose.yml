@@ -8,8 +8,10 @@
 #   3. docker-compose up -d --build
 #   4. Open http://localhost:8888
 #
-# Frontend image: nginx serving prebuilt files from `frontend/dist` only.
-# Vue source is maintained separately; build there and sync dist into this repo.
+# Backend is built from local source. Frontend is pulled from GHCR — its source
+# lives in the private QuantDinger-Vue repo, which publishes
+# `ghcr.io/<owner>/quantdinger-frontend` on every `v*` tag. Override the tag
+# or image path via FRONTEND_IMAGE / IMAGE_TAG in a project-root `.env`.
 #
 # Note: The container will NOT start if SECRET_KEY is using the default value.
 #       This is a security measure to prevent insecure deployments.
@@ -125,6 +127,9 @@ services:
       - GUNICORN_THREADS=${GUNICORN_THREADS:-8}
       # IBKR/MT5 need local TWS or MT5 terminal; set false on SaaS cloud (see env.example).
       - ALLOW_LOCAL_DESKTOP_BROKERS=${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
+      # Spot full close / open fee buffer (Admin → Settings → Live Trading, or backend_api_python/.env)
+      - SPOT_CLOSE_SAFETY_RATIO=${SPOT_CLOSE_SAFETY_RATIO:-0.998}
+      - SPOT_OPEN_QUOTE_BUFFER=${SPOT_OPEN_QUOTE_BUFFER:-0.995}
     networks:
       - quantdinger-network
     healthcheck:
@@ -134,14 +139,22 @@ services:
       retries: 3
 
   # ========================
-  # Frontend (Nginx serving prebuilt dist)
+  # Frontend (Nginx serving prebuilt SPA)
   # ========================
+  # Default behaviour: pull the prebuilt multi-arch image from GHCR.
+  # Local iteration: clone QuantDinger-Vue into `./QuantDinger-Vue/`
+  # (gitignored) and layer the build override on top:
+  #   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+  # The `build:` block lives in docker-compose.build.yml so users who only
+  # pull never need the `./QuantDinger-Vue/` directory to exist (Compose
+  # validates build context paths eagerly when `build:` is present).
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        RUNTIME_IMAGE: ${IMAGE_PREFIX:-}nginx:1.25-alpine
+    # Tag resolution (highest precedence wins):
+    #   FRONTEND_TAG   — per-side override, decouples FE from BE
+    #   IMAGE_TAG      — unified knob, sets both FE and BE (BE only relevant in ghcr.yml)
+    #   latest         — fallback; pin semver in project-root .env (e.g. IMAGE_TAG=3.0.10)
+    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    pull_policy: always
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:

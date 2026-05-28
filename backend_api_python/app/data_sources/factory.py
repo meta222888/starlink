@@ -153,6 +153,8 @@ class DataSourceFactory:
         limit: int,
         before_time: Optional[int] = None,
         after_time: Optional[int] = None,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         获取K线数据的便捷方法
@@ -164,13 +166,15 @@ class DataSourceFactory:
             limit: 数据条数
             before_time: 获取此时间之前的数据
             after_time: 可选，Unix 秒，K 线 time 需 >= 此值（回测左边界）
+            exchange_id: 加密货币运行中策略 — 与策略绑定的交易所 (binance/okx/...)
+            market_type: 加密货币运行中策略 — spot 或 swap
             
         Returns:
             K线数据列表
         """
         try:
             m = cls.normalize_market(market or "")
-            source = cls.get_source(m)
+            source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             klines = source.get_kline(symbol, timeframe, limit, before_time, after_time)
             
             # 确保数据按时间排序
@@ -182,13 +186,33 @@ class DataSourceFactory:
             return []
     
     @classmethod
-    def get_ticker(cls, market: str, symbol: str) -> Dict[str, Any]:
+    def _resolve_source(
+        cls,
+        market: str,
+        *,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+    ) -> BaseDataSource:
+        """Pick data source; crypto live strategies may scope to execution exchange."""
+        if market == "Crypto" and (exchange_id or "").strip():
+            from app.data_sources.crypto import CryptoDataSource
+
+            mt = (market_type or "swap").strip().lower()
+            if mt in ("futures", "future", "perp", "perpetual"):
+                mt = "swap"
+            return CryptoDataSource.for_exchange(str(exchange_id).strip().lower(), mt)
+        return cls.get_source(market)
+
+    @classmethod
+    def get_ticker(cls, market: str, symbol: str, exchange_id: Optional[str] = None, market_type: Optional[str] = None) -> Dict[str, Any]:
         """
         获取实时报价的便捷方法
         
         Args:
             market: 市场类型
             symbol: 交易对/股票代码
+            exchange_id: 加密货币运行中策略 — 与策略绑定的交易所
+            market_type: 加密货币运行中策略 — spot 或 swap
             
         Returns:
             实时报价数据: {
@@ -200,7 +224,7 @@ class DataSourceFactory:
         """
         try:
             m = cls.normalize_market(market or "")
-            source = cls.get_source(m)
+            source = cls._resolve_source(m, exchange_id=exchange_id, market_type=market_type)
             return source.get_ticker(symbol)
         except NotImplementedError:
             logger.warning(f"get_ticker not implemented for market: {market}")

@@ -240,11 +240,43 @@ def restore_running_strategies():
                 logger.error(traceback.format_exc())
         
         logger.info(f"Strategy restore completed: {restored_count}/{len(running_strategies)} restored")
+        _schedule_post_restore_position_sync()
         
     except Exception as e:
         logger.error(f"Failed to restore running strategies: {str(e)}")
         logger.error(traceback.format_exc())
         # Do not raise; avoid breaking app startup.
+
+
+def _schedule_post_restore_position_sync() -> None:
+    """
+    After restart, run one position-sync pass so strategies with dead API keys /
+    unreachable IBKR are auto-stopped (DB + executor thread) instead of spamming logs.
+    """
+    import os
+    import threading
+    import time
+
+    if os.getenv("POSITION_SYNC_ENABLED", "true").lower() != "true":
+        return
+
+    try:
+        delay = float(os.getenv("POST_RESTORE_SYNC_DELAY_SEC", "12"))
+    except Exception:
+        delay = 12.0
+    if delay < 0:
+        delay = 0.0
+
+    def _run() -> None:
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            get_pending_order_worker()._sync_positions_best_effort()
+            logger.info("Post-restore position sync finished (broken live strategies should be stopped)")
+        except Exception as exc:
+            logger.warning(f"Post-restore position sync failed: {exc}")
+
+    threading.Thread(target=_run, name="PostRestorePositionSync", daemon=True).start()
 
 
 def create_app(config_name='default'):

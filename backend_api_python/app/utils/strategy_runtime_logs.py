@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import os
 from typing import Optional
+=======
+from datetime import datetime, timezone
+>>>>>>> 9ce1a88814ea26c853fbcd7fc8c686672ff6d810
 
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
@@ -69,8 +73,11 @@ def append_strategy_log(strategy_id: int, level: str, message: str) -> None:
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
-                "INSERT INTO qd_strategy_logs (strategy_id, level, message) VALUES (?, ?, ?)",
-                (sid, lv, msg),
+                """
+                INSERT INTO qd_strategy_logs (strategy_id, level, message, timestamp)
+                VALUES (?, ?, ?, ?)
+                """,
+                (sid, lv, msg, datetime.now(timezone.utc)),
             )
             db.commit()
             cur.close()

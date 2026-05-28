@@ -12,6 +12,80 @@ from app.config import CCXTConfig, APIKeys
 
 logger = get_logger(__name__)
 
+# Live-trading scoped instances: one CCXT client per (exchange, spot|swap).
+_SCOPED_INSTANCES: Dict[str, "CryptoDataSource"] = {}
+
+
+def resolve_ccxt_for_live_trading(exchange_id: str, market_type: str) -> Tuple[str, Dict[str, Any]]:
+    """Map QuantDinger exchange_id + market_type to a CCXT class id and options.
+
+    Used for **public** OHLCV/ticker only (no API keys). Keeps chart/backtest on
+    ``CCXTConfig.DEFAULT_EXCHANGE`` while running crypto strategies (signal/live)
+    use the same venue as the strategy's configured exchange.
+    """
+    e = (exchange_id or "").strip().lower()
+    mt = (market_type or "swap").strip().lower()
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+
+    opts: Dict[str, Any] = {}
+    ccxt_id = e or "binance"
+
+    if e == "binance":
+        ccxt_id = "binanceusdm" if mt == "swap" else "binance"
+    elif e == "okx":
+        opts["defaultType"] = "swap" if mt == "swap" else "spot"
+    elif e == "bybit":
+        opts["defaultType"] = "linear" if mt == "swap" else "spot"
+    elif e == "bitget":
+        opts["defaultType"] = "swap" if mt == "swap" else "spot"
+    elif e == "gate":
+        opts["defaultType"] = "swap" if mt == "swap" else "spot"
+    elif e == "kucoin":
+        ccxt_id = "kucoinfutures" if mt == "swap" else "kucoin"
+    elif e == "kraken":
+        ccxt_id = "krakenfutures" if mt == "swap" else "kraken"
+    elif e == "deepcoin":
+        opts["defaultType"] = "swap" if mt == "swap" else "spot"
+    elif e == "htx" or e == "huobi":
+        ccxt_id = "htx"
+        opts["defaultType"] = "swap" if mt == "swap" else "spot"
+    elif e == "coinbase":
+        ccxt_id = "coinbase"
+    # unknown id: pass through and let ccxt raise if unsupported
+
+    return ccxt_id, opts
+
+
+def resolve_crypto_venue(
+    *,
+    exchange_config: Optional[Dict[str, Any]] = None,
+    trading_config: Optional[Dict[str, Any]] = None,
+    market_type: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Resolve (exchange_id, spot|swap) for public crypto OHLCV/ticker."""
+    cfg = exchange_config or {}
+    tc = trading_config or {}
+    ex = (
+        cfg.get("exchange_id")
+        or cfg.get("exchange")
+        or cfg.get("exchangeId")
+        or tc.get("exchange_id")
+        or tc.get("exchange")
+        or tc.get("exchangeId")
+        or ""
+    )
+    ex = str(ex).strip().lower()
+    if not ex:
+        ex = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
+
+    mt = str(market_type or tc.get("market_type") or "swap").strip().lower()
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    if mt not in ("spot", "swap"):
+        mt = "swap"
+    return ex, mt
+
 
 class CryptoDataSource(BaseDataSource):
     """加密货币数据源"""
@@ -38,31 +112,71 @@ class CryptoDataSource(BaseDataSource):
     COMMON_QUOTES = ['USDT', 'USD', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB', 'EUR', 'GBP']
     
     def __init__(self):
-        config = {
-            'timeout': CCXTConfig.TIMEOUT,
-            'enableRateLimit': CCXTConfig.ENABLE_RATE_LIMIT
+        self._scoped_exchange_id = ""
+        self._scoped_market_type = "spot"
+        default_ex = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
+        self._init_ccxt_exchange(default_ex, {})
+
+    @classmethod
+    def for_exchange(cls, exchange_id: str, market_type: str = "swap") -> "CryptoDataSource":
+        """Return a cached data source bound to a live-trading venue (crypto only)."""
+        ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
+        mt = (market_type or "swap").strip().lower()
+        if mt in ("futures", "future", "perp", "perpetual"):
+            mt = "swap"
+        cache_key = f"{ccxt_id}|{mt}|{sorted(options.items())}"
+        cached = _SCOPED_INSTANCES.get(cache_key)
+        if cached is not None:
+            return cached
+        inst = object.__new__(cls)
+        inst._scoped_exchange_id = (exchange_id or "").strip().lower()
+        inst._scoped_market_type = mt
+        inst._init_ccxt_exchange(ccxt_id, options)
+        _SCOPED_INSTANCES[cache_key] = inst
+        logger.info(
+            "CryptoDataSource scoped for live trading: exchange=%s market_type=%s ccxt=%s options=%s",
+            inst._scoped_exchange_id,
+            mt,
+            ccxt_id,
+            options,
+        )
+        return inst
+
+    def _init_ccxt_exchange(self, ccxt_exchange_id: str, options: Optional[Dict[str, Any]] = None) -> None:
+        config: Dict[str, Any] = {
+            "timeout": CCXTConfig.TIMEOUT,
+            "enableRateLimit": CCXTConfig.ENABLE_RATE_LIMIT,
         }
-        
-        # 如果配置了代理
         if CCXTConfig.PROXY:
-            config['proxies'] = {
-                'http': CCXTConfig.PROXY,
-                'https': CCXTConfig.PROXY
-            }
-        
-        exchange_id = CCXTConfig.DEFAULT_EXCHANGE
-        
-        # 动态加载交易所类
+            config["proxies"] = {"http": CCXTConfig.PROXY, "https": CCXTConfig.PROXY}
+        if options:
+            config.setdefault("options", {}).update(dict(options))
+
+        exchange_id = (ccxt_exchange_id or "").strip().lower()
         if not hasattr(ccxt, exchange_id):
-            logger.warning(f"CCXT exchange '{exchange_id}' not found, falling back to 'coinbase'")
-            exchange_id = 'coinbase'
-            
+            logger.warning("CCXT exchange '%s' not found, falling back to 'binance'", exchange_id)
+            exchange_id = "binance"
+
         exchange_class = getattr(ccxt, exchange_id)
         self.exchange = exchange_class(config)
-        
-        # 延迟加载 markets（首次使用时加载）
         self._markets_loaded = False
         self._markets_cache = None
+
+    def _symbol_for_scoped_market(self, symbol: str) -> str:
+        """CCXT linear/swap symbols often need ``BASE/QUOTE:QUOTE`` (e.g. BTC/USDT:USDT)."""
+        normalized = self._normalize_symbol_for_exchange(symbol)
+        if not normalized:
+            return symbol
+        mt = getattr(self, "_scoped_market_type", "") or "spot"
+        if mt != "swap":
+            return normalized
+        if ":" in normalized:
+            return normalized
+        if "/" in normalized:
+            _base, quote = normalized.split("/", 1)
+            if quote:
+                return f"{normalized}:{quote}"
+        return normalized
     
     def _ensure_markets_loaded(self) -> bool:
         """确保 markets 已加载（用于符号验证）"""
@@ -198,9 +312,8 @@ class CryptoDataSource(BaseDataSource):
         if not symbol or not symbol.strip():
             return {'last': 0, 'symbol': symbol}
         
-        # 规范化符号
-        normalized = self._normalize_symbol_for_exchange(symbol)
-        
+        normalized = self._symbol_for_scoped_market(symbol)
+
         if not normalized:
             logger.warning(f"Failed to normalize symbol: {symbol}")
             return {'last': 0, 'symbol': symbol}
@@ -287,8 +400,7 @@ class CryptoDataSource(BaseDataSource):
                     f"({fetch_limit}) and resampling to '{ccxt_timeframe}'"
                 )
 
-            # 使用统一的符号规范化方法
-            symbol_pair = self._normalize_symbol_for_exchange(symbol)
+            symbol_pair = self._symbol_for_scoped_market(symbol)
 
             if not symbol_pair:
                 logger.warning(f"Failed to normalize symbol for K-line: {symbol}")

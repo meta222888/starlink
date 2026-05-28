@@ -224,7 +224,7 @@ https://app.example.com
 
 原因：
 
-- 当前开源前端为预编译 `frontend/dist`
+- 前端以预构建镜像（`ghcr.io/brokermr810/quantdinger-frontend`）方式拉取，无需本地构建
 - 前端容器内部已把 `/api/*` 代理到 Docker 网络中的 `backend:5000`
 - 用户只需要维护一个域名和一套 HTTPS
 
@@ -360,22 +360,19 @@ docker-compose logs backend --tail=100
 docker-compose restart frontend
 ```
 
-### 4. 前端构建报错 `COPY frontend/dist ... not found`
+### 4. `docker compose up` 拉不到 `quantdinger-frontend`
 
-原因通常是 `.dockerignore` 把 `frontend/dist` 排除了，而当前开源版前端正是直接复制这个预编译目录。
-
-检查：
+前端镜像托管在 GHCR（`ghcr.io/brokermr810/quantdinger-frontend`）。若拉取失败：
 
 ```bash
-cat .dockerignore
-ls frontend/dist
+docker pull ghcr.io/brokermr810/quantdinger-frontend:latest
 ```
 
-确认 `.dockerignore` 中不要包含：
+常见原因：
 
-```text
-frontend/dist
-```
+- GHCR 包可见性是私有 —— 在 GitHub 上把包设为 public，或先 `docker login ghcr.io`
+- 网络封禁 GHCR —— 在项目根 `.env` 用 `FRONTEND_IMAGE` 指向国内镜像
+- `IMAGE_TAG`(或 `BACKEND_TAG` / `FRONTEND_TAG`)pin 的版本不存在 —— 回退到 `latest` 或选一个已发布的 semver tag
 
 ### 5. 后台保存配置时报 `Read-only file system: '/app/.env'`
 

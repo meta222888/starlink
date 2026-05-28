@@ -347,6 +347,92 @@ def _reject_quick_trade_if_desktop_broker(exchange_id: str):
     return None
 
 
+def _try_enrich_fill(
+    client: Any,
+    *,
+    order_id: str,
+    symbol: str,
+    market_type: str,
+    max_wait_sec: float = 8.0,
+) -> Dict[str, Any]:
+    """Best-effort post-place ``wait_for_fill`` for a Quick Trade order.
+
+    Quick Trade historically persisted whatever ``filled`` / ``avg_price`` the
+    ``place_market_order`` ACK returned — which on most exchanges is ``0`` and
+    never carries the realised fee. This helper re-uses each client's
+    ``wait_for_fill`` (the same one the strategy worker uses) to retrieve the
+    real fill quantity, average price, and commission.
+
+    Returns ``{"filled": ..., "avg_price": ..., "fee": ..., "fee_ccy": ...}``;
+    silently returns zeros on any failure so Quick Trade never fails just
+    because we couldn't enrich the row.
+    """
+    out = {"filled": 0.0, "avg_price": 0.0, "fee": 0.0, "fee_ccy": ""}
+    oid = str(order_id or "").strip()
+    if not oid:
+        return out
+    sym = str(symbol or "")
+    mt = (market_type or "swap").strip().lower()
+    try:
+        from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
+        from app.services.live_trading.okx import OkxClient
+        from app.services.live_trading.symbols import (
+            to_gate_currency_pair,
+            to_okx_spot_inst_id,
+            to_okx_swap_inst_id,
+        )
+
+        q: Dict[str, Any] = {}
+        if isinstance(client, OkxClient):
+            inst_id = to_okx_spot_inst_id(sym) if mt == "spot" else to_okx_swap_inst_id(sym)
+            inst_type = "SPOT" if mt == "spot" else "SWAP"
+            q = client.wait_for_fill(
+                inst_id=inst_id,
+                ord_id=oid,
+                market_type=mt,
+                inst_type=inst_type,
+                max_wait_sec=max_wait_sec,
+            )
+        elif isinstance(client, GateSpotClient):
+            q = client.wait_for_fill(order_id=oid, max_wait_sec=max_wait_sec)
+        elif isinstance(client, GateUsdtFuturesClient):
+            q = client.wait_for_fill(
+                order_id=oid,
+                contract=to_gate_currency_pair(sym),
+                max_wait_sec=max_wait_sec,
+            )
+        elif hasattr(client, "wait_for_fill"):
+            # All other clients use a (order_id, max_wait_sec) signature;
+            # some also accept symbol — try the common shape first.
+            try:
+                q = client.wait_for_fill(order_id=oid, max_wait_sec=max_wait_sec)
+            except TypeError:
+                try:
+                    q = client.wait_for_fill(symbol=sym, order_id=oid, max_wait_sec=max_wait_sec)
+                except Exception as ie:
+                    logger.info(f"_try_enrich_fill: client {type(client).__name__} wait_for_fill failed: {ie}")
+                    return out
+        else:
+            return out
+        if isinstance(q, dict):
+            try:
+                out["filled"] = float(q.get("filled") or 0.0)
+            except Exception:
+                out["filled"] = 0.0
+            try:
+                out["avg_price"] = float(q.get("avg_price") or 0.0)
+            except Exception:
+                out["avg_price"] = 0.0
+            try:
+                out["fee"] = abs(float(q.get("fee") or 0.0))
+            except Exception:
+                out["fee"] = 0.0
+            out["fee_ccy"] = str(q.get("fee_ccy") or "").strip()
+    except Exception as e:
+        logger.info(f"_try_enrich_fill skipped: {e}")
+    return out
+
+
 def _record_quick_trade(
     user_id: int,
     credential_id: int,
@@ -367,6 +453,8 @@ def _record_quick_trade(
     error_msg: str,
     source: str,
     raw_result: Dict[str, Any],
+    commission: float = 0.0,
+    commission_ccy: str = "",
 ):
     """Insert a quick trade record into the database."""
     try:
@@ -378,14 +466,16 @@ def _record_quick_trade(
                     (user_id, credential_id, exchange_id, symbol, side, order_type,
                      amount, price, leverage, market_type, tp_price, sl_price,
                      status, exchange_order_id, filled_amount, avg_fill_price,
+                     commission, commission_ccy,
                      error_msg, source, raw_result, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id
                 """,
                 (
                     user_id, credential_id, exchange_id, symbol, side, order_type,
                     amount, price, leverage, market_type, tp_price, sl_price,
                     status, exchange_order_id, filled, avg_price,
+                    float(commission or 0.0), str(commission_ccy or "").strip().upper(),
                     error_msg, source, json.dumps(raw_result or {}),
                 ),
             )
@@ -578,6 +668,27 @@ def place_order():
         avg_fill = float(getattr(result, "avg_price", 0) or 0)
         raw = getattr(result, "raw", {}) or {}
 
+        # ---- best-effort post-place enrichment (fee + accurate filled/avg) ----
+        # ``place_market_order`` typically only returns the ACK, so the filled
+        # qty / avg price / commission have to be polled separately. Without
+        # this Quick Trade rows landed with ``commission=0`` and our P&L
+        # surfaces were optimistic. Mirrors the strategy worker's behaviour.
+        commission = 0.0
+        commission_ccy = ""
+        if exchange_order_id:
+            enrich = _try_enrich_fill(
+                client,
+                order_id=exchange_order_id,
+                symbol=symbol,
+                market_type=market_type,
+            )
+            if enrich.get("filled", 0.0) > 0:
+                filled = float(enrich["filled"])
+            if enrich.get("avg_price", 0.0) > 0:
+                avg_fill = float(enrich["avg_price"])
+            commission = float(enrich.get("fee") or 0.0)
+            commission_ccy = str(enrich.get("fee_ccy") or "")
+
         # ---- record trade ----
         # Record original USDT amount, not converted base qty
         trade_id = _record_quick_trade(
@@ -600,6 +711,8 @@ def place_order():
             error_msg="",
             source=source,
             raw_result=raw,
+            commission=commission,
+            commission_ccy=commission_ccy,
         )
 
         return jsonify({
@@ -1565,6 +1678,29 @@ def close_position():
             actual_close_size = position_size
         if actual_close_size <= 0:
             return jsonify({"code": 0, "msg": "Close size is zero"}), 400
+
+        if market_type == "spot":
+            from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+
+            adjusted, spot_meta = clamp_spot_close_quantity(
+                client, symbol=symbol, requested_qty=actual_close_size
+            )
+            if adjusted <= 0:
+                return jsonify(
+                    {
+                        "code": 0,
+                        "msg": "可卖余额不足，无法平仓（可能因买入手续费导致可用数量小于持仓记录）",
+                    }
+                ), 400
+            if spot_meta.get("adjusted"):
+                logger.info(
+                    "quick_trade spot close adjusted: symbol=%s requested=%s final=%s meta=%s",
+                    symbol,
+                    actual_close_size,
+                    adjusted,
+                    spot_meta,
+                )
+            actual_close_size = adjusted
         
         # ---- determine signal type based on position side ----
         if market_type == "spot":
@@ -1604,7 +1740,27 @@ def close_position():
         filled = float(getattr(result, "filled", 0) or 0)
         avg_fill = float(getattr(result, "avg_price", 0) or 0)
         raw = getattr(result, "raw", {}) or {}
-        
+
+        # ---- best-effort post-place enrichment (fee + accurate filled/avg) ----
+        # See the matching block in /place-order — close-position orders need
+        # the same wait_for_fill pass so the resulting Quick Trade row carries
+        # the realised commission.
+        commission = 0.0
+        commission_ccy = ""
+        if exchange_order_id:
+            enrich = _try_enrich_fill(
+                client,
+                order_id=exchange_order_id,
+                symbol=symbol,
+                market_type=market_type,
+            )
+            if enrich.get("filled", 0.0) > 0:
+                filled = float(enrich["filled"])
+            if enrich.get("avg_price", 0.0) > 0:
+                avg_fill = float(enrich["avg_price"])
+            commission = float(enrich.get("fee") or 0.0)
+            commission_ccy = str(enrich.get("fee_ccy") or "")
+
         # ---- calculate USDT amount for recording ----
         # Convert base asset quantity to USDT amount for consistent recording
         # amount (USDT) = base_qty * price
@@ -1638,6 +1794,8 @@ def close_position():
             error_msg="",
             source=source,
             raw_result=raw,
+            commission=commission,
+            commission_ccy=commission_ccy,
         )
         
         return jsonify({
@@ -1687,6 +1845,7 @@ def get_history():
                 SELECT id, exchange_id, symbol, side, order_type, amount, price,
                        leverage, market_type, tp_price, sl_price, status,
                        exchange_order_id, filled_amount, avg_fill_price,
+                       commission, commission_ccy,
                        error_msg, source, created_at
                 FROM qd_quick_trades
                 WHERE user_id = %s
@@ -1716,6 +1875,8 @@ def get_history():
                 "exchange_order_id": r.get("exchange_order_id") or "",
                 "filled_amount": float(r.get("filled_amount") or 0),
                 "avg_fill_price": float(r.get("avg_fill_price") or 0),
+                "commission": float(r.get("commission") or 0),
+                "commission_ccy": r.get("commission_ccy") or "",
                 "error_msg": r.get("error_msg") or "",
                 "source": r.get("source") or "",
                 "created_at": str(r.get("created_at") or ""),

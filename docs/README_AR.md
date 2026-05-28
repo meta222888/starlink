@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>نظام تشغيل كمّي خاص مدعوم بالذكاء الاصطناعي</h3>
-  <p><strong>حزمة واحدة قابلة للنشر للرسوم البيانية، وبحوث السوق بالذكاء الاصطناعي، ومؤشرات واستراتيجيات بايثون، والاختبار الرجعي، والتنفيذ المباشر—على خوادمك ومفاتيح API الخاصة بك.</strong></p>
-  <p><em>منصة كمّية ذاتية الاستضافة: من الفكرة والبرمجة بمساعدة الذكاء الاصطناعي إلى سير عمل تجريبي وتداول مباشر متصل بالبورصات، مع خيارات متعددة المستخدمين والفوترة.</em></p>
+  <p><strong>حزمة Docker واحدة للرسوم، بحوث متعددة LLM، استراتيجيات بايثون، اختبار رجعي بمستوى مؤسسي، وتنفيذ مباشر متعدد الأسواق—استضافة ذاتية كاملة، مفاتيحك وبياناتك.</strong></p>
+  <p><em>quant OS مفتوح المصدر: برمجة بمساعدة AI → اختبار رجعي → ورقي → مباشر (crypto/IBKR/MT5/Alpaca) مع Agent Gateway وMCP.</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;" dir="ltr">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -46,9 +46,11 @@
 
   <p style="margin-top: 1.45rem; margin-bottom: 10px;" dir="ltr">
     <a href="../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square&logo=apache" alt="License"></a>
-    <img src="https://img.shields.io/badge/Version-3.0.7-orange?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
 </div>
@@ -59,26 +61,54 @@
 
 ## جدول المحتويات
 
-[بدء سريع](#بدء-سريع) · [مستودعات ذات صلة](#مستودعات-ذات-صلة) · [MCP / Agent](#mcp--agent-gateway) · [نظرة عامة](#نظرة-عامة-على-المنتج) · [الميزات](#أبرز-الميزات) · [لقطات](#جولة-بصرية) · [البنية](#البنية) · [التثبيت](#التثبيت-والتشغيل-الأول) · [الوثائق](#قائمة-الوثائق) · [أسئلة شائعة](#أسئلة-شائعة) · [الترخيص](#الترخيص)
+[بدء سريع](#بدء-سريع) · [أبرز التقنيات](#أبرز-التقنيات) · [مستودعات ذات صلة](#مستودعات-ذات-صلة) · [MCP / Agent](#mcp--agent-gateway) · [نظرة عامة](#نظرة-عامة-على-المنتج) · [الميزات](#أبرز-الميزات) · [لقطات](#جولة-بصرية) · [البنية](#البنية) · [التثبيت](#التثبيت-والتشغيل-الأول) · [الوثائق](#قائمة-الوثائق) · [أسئلة شائعة](#أسئلة-شائعة) · [الترخيص](#الترخيص)
 
 ---
 
-> QuantDinger منصة كمّية **ذاتية الاستضافة وتفضّل المحلي** تجمع **البحث المدعوم بالذكاء الاصطناعي** و**استراتيجيات بايثون الأصلية** و**الاختبار الرجعي** و**التداول المباشر** (عملات مشفّرة، أسهم أمريكية عبر IBKR، فوركس عبر MT5، أسهم / ETF / عملات مشفّرة عبر Alpaca) في **منتج واحد**.
+> QuantDinger **نظام تشغيل كمّي ذاتي الاستضافة** — ليس chatbot بزر شراء. يوحّد **بحوث متعددة LLM** و**محركات استراتيجية بايثون** و**اختبارًا رجعيًا على الخادم** و**تداولًا مباشرًا متعدد الوسطاء** (10+ crypto venue، IBKR، MT5، Alpaca) في حزمة production تتحكم بها بالكامل.
 
 </div>
 
 <div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger demo" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p dir="rtl"><sub><em>من الصفر إلى التشغيل—رسوم، بحث AI، وسير عمل الاستراتيجية في دقائق.</em></sub></p>
+</div>
+
+<div align="center">
   <img src="screenshots/architecture.png" alt="بنية QuantDinger" width="960">
-  <p dir="rtl"><sub><em>حلقة مغلقة من مصادر البيانات إلى المؤشرات والإشارات والاستراتيجيات والاختبار الرجعي وتحليل الذكاء الاصطناعي والتنفيذ.</em></sub></p>
+  <p dir="rtl"><sub><em>حلقة مغلقة من 5 طبقات: <strong>فكرة → مؤشر → استراتيجية → اختبار رجعي → تحسين → تنفيذ → مراقبة</strong></em></sub></p>
 </div>
 
 <div dir="rtl">
 
+## أبرز التقنيات
+
+| | ما يميز QuantDinger |
+|---|---------------------|
+| **quant OS متكامل** | رسوم، IDE، AI، اختبار رجعي، bots مباشرة، quick trade، إدارة حسابات الوسطاء—منتج واحد |
+| **Agent-native** | **Agent Gateway** + PyPI [`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/) — Cursor / Claude Code / Codex مع سجل تدقيق |
+| **محركان للاستراتيجية** | `IndicatorStrategy` (إشارات متجهة) و`ScriptStrategy` (`on_bar`) |
+| **أسواق متعددة** | CCXT crypto، IBKR، MT5، Alpaca — صفحة حسابات وسيط موحّدة |
+| **بنية production** | PostgreSQL 16 + Redis 7، Workers، صور GHCR multi-arch |
+| **أمان** | يرفض `SECRET_KEY` الافتراضي، رموز مُ hash، ورقي افتراضيًا |
+
 ## بدء سريع
 
-**المتطلبات:** [Docker](https://docs.docker.com/get-docker/) + Compose و**Git**. **لا حاجة لـ Node.js** (واجهة ويب مُجمَّعة مسبقًا في `frontend/dist`).
+**المتطلبات:** [Docker](https://docs.docker.com/get-docker/) + Compose v2. **لا حاجة لـ Node.js** (الواجهة من GHCR).
 
-### macOS / Linux
+### تثبيت بسطر واحد (Linux / macOS)
+
+</div>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
+```
+
+<div dir="rtl">
+
+افتراضيًا `~/quantdinger`. أعد التشغيل لسحب أحدث الصور. → **`http://localhost:8888`** (`quantdinger` / `123456`، غيّر كلمة المرور فورًا).
+
+### قياسي: استنساخ المستودع (macOS / Linux)
 
 </div>
 
@@ -122,7 +152,7 @@ docker-compose up -d --build
 | المستودع | المحتوى |
 |----------|---------|
 | **[QuantDinger](https://github.com/brokermr810/QuantDinger)** (هذا المستودع) | الخلفية، Compose، الوثائق، ويب مُجمَّع |
-| **[QuantDinger-Vue](https://github.com/brokermr810/QuantDinger-Vue)** | **مصدر الويب** (Vue) — `npm run build` ثم استبدل `frontend/dist` |
+| **[QuantDinger-Vue](https://github.com/brokermr810/QuantDinger-Vue)** | **مصدر الويب** (Vue) — وسم `v*` ينشر تلقائيًا `ghcr.io/brokermr810/quantdinger-frontend` |
 | **[QuantDinger-Mobile](https://github.com/brokermr810/QuantDinger-Mobile)** | **عميل الجوال** (مفتوح المصدر) |
 
 </div>
@@ -141,7 +171,19 @@ docker-compose up -d --build
 
 ## نظرة عامة على المنتج
 
-بيئة موحّدة **للذكاء الاصطناعي + استراتيجيات بايثون + اختبار رجعي + تداول مباشر** قابلة للاستضافة الذاتية. تُدار الاعتمادات عبر **PostgreSQL** و**`.env`**. تُربط البورصات وIBKR وMT5 وAlpaca ونماذج اللغة عبر متغيرات البيئة.
+بيئة **AI + استراتيجيات بايثون + اختبار رجعي + تداول مباشر** ذاتية الاستضافة. تستبدل مجموعة TradingView + Notebook + chat AI + bots ب**حزمة Docker قابلة للتدقيق**. الاعتمادات في **PostgreSQL** و**`.env`**.
+
+## أبرز الميزات
+
+- **البحث والذكاء الاصطناعي** — LLM متعدد، NL→كود، Agent / MCP (scoped token، SSE).
+- **البناء** — `IndicatorStrategy` / `ScriptStrategy`، واجهة شموع احترافية.
+- **التحقق** — اختبار رجعي على الخادم (equity، drawdown، سجل الصفقات).
+- **التشغيل** — 10+ crypto، IBKR / MT5 / Alpaca، صفحة وسيط موحّدة، Telegram / Discord / Webhook.
+- **المنصة** — Docker + GHCR، Postgres 16، Redis 7، OAuth، متعدد المستخدمين، فوترة، AWS Marketplace.
+
+## البنية
+
+**المبدأ:** فصل بيانات السوق · الاستراتيجية/الاختبار · التنفيذ. Nginx + Vue SPA، Flask + Gunicorn، PostgreSQL 16، Redis 7. النشر: `install.sh` بسطر واحد، GHCR zero-repo، full repo Compose، AWS AMI، [SaaS](https://ai.quantdinger.com).
 
 ## جولة بصرية
 
@@ -164,60 +206,6 @@ docker-compose up -d --build
   </tr>
 </table>
 
-## أبرز الميزات
-
-- **البحث والذكاء الاصطناعي** — تحليل متعدد نماذج اللغة، قوائم المراقبة، السجل؛ NL→كود؛ تكامل **Agent / MCP**.
-- **البناء** — `IndicatorStrategy` و`ScriptStrategy` (`on_bar`)؛ واجهة شموع احترافية.
-- **التحقق** — اختبار رجعي على الخادم، منحنى رأس المال.
-- **التشغيل** — تنفيذ عملات مشفّرة، تداول سريع، IBKR / MT5 / Alpaca (أسهم · ETF · عملات مشفّرة)؛ Telegram وبريد وDiscord وWebhook وغيرها.
-- **المنصة** — Docker Compose، Postgres، Redis، OAuth، متعدد المستخدمين، أرصدة/عضوية/USDT.
-
-## البنية
-
-</div>
-
-```mermaid
-flowchart LR
-    U[متداول / مشغّل]
-
-    subgraph FE[الواجهة]
-        WEB[Vue]
-        NG[Nginx]
-    end
-
-    subgraph BE[الخلفية]
-        API[Flask API]
-        AI[خدمة AI]
-        STRAT[استراتيجية·اختبار]
-        EXEC[تنفيذ]
-    end
-
-    subgraph DATA[البيانات]
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-    end
-
-    subgraph EXT[خارجي]
-        LLM[LLM]
-        EXCH[بورصة]
-        BROKER[IBKR / MT5 / Alpaca]
-    end
-
-    U --> WEB --> NG --> API
-    API --> AI
-    API --> STRAT
-    API --> EXEC
-    AI --> PG
-    STRAT --> PG
-    EXEC --> PG
-    API --> REDIS
-    AI --> LLM
-    EXEC --> EXCH
-    EXEC --> BROKER
-```
-
-<div dir="rtl">
-
 ## التثبيت والتشغيل الأول
 
 1. استنسخ المستودع ثم `cp backend_api_python/env.example backend_api_python/.env`
@@ -229,7 +217,8 @@ flowchart LR
      curl -o backend.env https://raw.githubusercontent.com/brokermr810/QuantDinger/main/backend_api_python/env.example
      docker compose -f docker-compose.ghcr.yml up -d
      ```
-     الصور الافتراضية: `ghcr.io/brokermr810/quantdinger-{backend,frontend}:latest`. لتثبيت إصدار محدد اضبط `IMAGE_TAG=v3.0.7` في ملف `.env` محلي.
+     الصور الافتراضية: `ghcr.io/brokermr810/quantdinger-{backend,frontend}:latest`. لتثبيت إصدار محدد اضبط `IMAGE_TAG=v3.0.9` في ملف `.env` محلي (أو `BACKEND_TAG` / `FRONTEND_TAG` لتجاوز جانب واحد فقط).
+   - **التطوير المحلي للواجهة**: استنسخ `QuantDinger-Vue` إلى `./QuantDinger-Vue/` (مُتجاهَل من Git) وشغّل `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`. التفاصيل في [README الإنجليزي](../README.md#alternative-build-the-frontend-from-vue-source).
 4. **الويب:** `http://localhost:8888` · **صحة API:** `http://localhost:5000/api/health`
 5. غيّر كلمة مرور المسؤول الافتراضية قبل الإنتاج. اضبط **`FRONTEND_URL`** في `backend_api_python/.env` على عنوانك الفعلي.
 

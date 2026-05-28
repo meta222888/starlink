@@ -208,6 +208,43 @@ class GateSpotClient(_GateBase):
             raise LiveTradingError("Gate spot get_order requires order_id")
         return self._signed_request("GET", f"/api/v4/spot/orders/{str(order_id)}")
 
+    def get_spot_trades_for_order(self, *, order_id: str, currency_pair: str) -> Tuple[float, str]:
+        """Aggregate the actual fee from Gate spot fill history for a given order.
+
+        Gate updates ``fee`` on the spot order object asynchronously after the
+        underlying fills are settled; the authoritative source is
+        ``GET /api/v4/spot/my_trades`` which we sum here. Returns ``(0.0, "")``
+        on any failure so callers can transparently fall back to the order-level
+        fee. Reference: https://www.gate.com/docs/developers/apiv4/#list-personal-trading-history
+        """
+        oid = str(order_id or "").strip()
+        pair = str(currency_pair or "").strip()
+        if not oid or not pair:
+            return 0.0, ""
+        try:
+            resp = self._signed_request(
+                "GET", "/api/v4/spot/my_trades",
+                params={"currency_pair": pair, "order_id": oid, "limit": 100},
+            )
+        except Exception:
+            return 0.0, ""
+        if not isinstance(resp, list):
+            return 0.0, ""
+        total = 0.0
+        ccy = ""
+        for t in resp:
+            if not isinstance(t, dict):
+                continue
+            try:
+                v = abs(float(t.get("fee") or 0.0))
+            except Exception:
+                v = 0.0
+            if v > 0:
+                total += v
+                if not ccy:
+                    ccy = str(t.get("fee_currency") or "").strip()
+        return total, ccy
+
     def wait_for_fill(self, *, order_id: str, max_wait_sec: float = 10.0, poll_interval_sec: float = 0.5) -> Dict[str, Any]:
         end_ts = time.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
@@ -239,6 +276,24 @@ class GateSpotClient(_GateBase):
             except Exception:
                 fee = 0.0
             fee_ccy = str(last.get("fee_currency") or "").strip()
+            # Gate updates ``fee`` on the spot order object asynchronously after
+            # the underlying trade rows land in /spot/my_trades — if the order
+            # already reports filled volume but no fee, query the authoritative
+            # fills endpoint and use its sum. This is the same shape Binance /
+            # OKX use (post-fill trades endpoint), without it Gate fills get
+            # persisted with ``commission=0`` and P&L drifts.
+            if filled > 0 and fee <= 0:
+                try:
+                    mt_fee, mt_ccy = self.get_spot_trades_for_order(
+                        order_id=str(order_id),
+                        currency_pair=str(last.get("currency_pair") or ""),
+                    )
+                except Exception:
+                    mt_fee, mt_ccy = 0.0, ""
+                if mt_fee > 0:
+                    fee = mt_fee
+                    if mt_ccy:
+                        fee_ccy = mt_ccy
             # Fee may lag behind filled/avg on order object; keep polling until timeout (same idea as Bitget/OKX).
             if filled > 0 and avg_price > 0:
                 if fee <= 0 and not timed_out:
@@ -533,6 +588,44 @@ class GateUsdtFuturesClient(_GateBase):
             raise LiveTradingError("Gate futures get_order requires order_id")
         return self._signed_request("GET", f"/api/v4/futures/usdt/orders/{str(order_id)}")
 
+    def get_futures_trades_for_order(self, *, order_id: str, contract: str) -> Tuple[float, str]:
+        """Aggregate the actual fee from Gate USDT futures fill history.
+
+        Gate's USDT futures ``order`` object often reports ``fee=0`` even after
+        the order is fully filled — the fee is only finalised when the trade
+        row appears in ``GET /api/v4/futures/usdt/my_trades``. We sum the
+        ``fee`` column there (in USDT). Note that the filter parameter on this
+        endpoint is ``order`` (not ``order_id``). Returns ``(0.0, "")`` on any
+        failure so callers can transparently fall back to the order-level fee.
+        Reference: https://www.gate.com/docs/developers/apiv4/#list-personal-trading-history-2
+        """
+        oid = str(order_id or "").strip()
+        c = str(contract or "").strip()
+        if not oid or not c:
+            return 0.0, ""
+        try:
+            resp = self._signed_request(
+                "GET", "/api/v4/futures/usdt/my_trades",
+                params={"contract": c, "order": oid, "limit": 100},
+            )
+        except Exception:
+            return 0.0, ""
+        if not isinstance(resp, list):
+            return 0.0, ""
+        total = 0.0
+        for t in resp:
+            if not isinstance(t, dict):
+                continue
+            try:
+                v = abs(float(t.get("fee") or 0.0))
+            except Exception:
+                v = 0.0
+            total += v
+        if total > 0:
+            # Gate USDT-margined perpetuals settle fees in USDT.
+            return total, "USDT"
+        return 0.0, ""
+
     def wait_for_fill(self, *, order_id: str, contract: str, max_wait_sec: float = 12.0, poll_interval_sec: float = 0.5) -> Dict[str, Any]:
         end_ts = time.time() + float(max_wait_sec or 0.0)
         last: Dict[str, Any] = {}
@@ -574,6 +667,22 @@ class GateUsdtFuturesClient(_GateBase):
             # Gate USDT futures fees are in USDT
             if fee > 0:
                 fee_ccy = "USDT"
+            # Gate USDT futures order objects routinely report ``fee=0`` even
+            # after the order is fully filled; the authoritative source is
+            # /futures/usdt/my_trades (filtered by the ``order`` param). Pull
+            # from there so commissions stop landing in ``qd_strategy_trades``
+            # as zero and P&L stops drifting.
+            if filled > 0 and fee <= 0:
+                try:
+                    mt_fee, mt_ccy = self.get_futures_trades_for_order(
+                        order_id=str(order_id),
+                        contract=str(contract),
+                    )
+                except Exception:
+                    mt_fee, mt_ccy = 0.0, ""
+                if mt_fee > 0:
+                    fee = mt_fee
+                    fee_ccy = mt_ccy or "USDT"
             if filled > 0 and avg_price > 0:
                 if fee <= 0 and not timed_out:
                     time.sleep(float(poll_interval_sec or 0.5))

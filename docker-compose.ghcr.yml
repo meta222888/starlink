@@ -22,10 +22,17 @@
 # mount is needed (unlike docker-compose.yml).
 #
 # Orchestration override knobs (project-root .env, all optional):
-#   IMAGE_TAG       - backend & frontend tag (default: latest)
+#   IMAGE_TAG       - unified tag for backend AND frontend  (optional; see per-side defaults below)
+#   BACKEND_TAG     - per-side override: pins backend only  (default: $IMAGE_TAG)
+#   FRONTEND_TAG    - per-side override: pins frontend only (default: $IMAGE_TAG)
 #   BACKEND_IMAGE   - backend image path  (default: ghcr.io/brokermr810/quantdinger-backend)
 #   FRONTEND_IMAGE  - frontend image path (default: ghcr.io/brokermr810/quantdinger-frontend)
 #   IMAGE_PREFIX    - postgres/redis registry prefix (e.g. docker.m.daocloud.io/library/)
+#
+# Normal use: set IMAGE_TAG once and both services move in lockstep.
+# Per-side overrides only kick in when BACKEND_TAG / FRONTEND_TAG are
+# explicitly set — useful for testing a frontend hotfix against a
+# stable backend, or vice versa.
 
 services:
   postgres:
@@ -71,7 +78,9 @@ services:
       retries: 5
 
   backend:
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${IMAGE_TAG:-latest}
+    # Tag resolution: BACKEND_TAG > IMAGE_TAG > latest. See header comment.
+    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    pull_policy: always
     container_name: quantdinger-backend
     restart: unless-stopped
     depends_on:
@@ -117,7 +126,9 @@ services:
       retries: 3
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${IMAGE_TAG:-latest}
+    # Tag resolution: FRONTEND_TAG > IMAGE_TAG > latest. See header comment.
+    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    pull_policy: always
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:

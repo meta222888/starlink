@@ -1041,6 +1041,8 @@ CREATE TABLE IF NOT EXISTS qd_quick_trades (
     exchange_order_id VARCHAR(120) DEFAULT '',
     filled_amount   DECIMAL(24, 8) DEFAULT 0,
     avg_fill_price  DECIMAL(24, 8) DEFAULT 0,
+    commission      DECIMAL(24, 8) DEFAULT 0,              -- realised trading fee for this fill (best-effort)
+    commission_ccy  VARCHAR(16) DEFAULT '',                -- e.g. 'USDT' / 'BNB'; empty when unknown
     error_msg       TEXT DEFAULT '',
     source          VARCHAR(40) DEFAULT 'manual',          -- ai_radar / ai_analysis / indicator / manual
     raw_result      JSONB,
@@ -1049,6 +1051,21 @@ CREATE TABLE IF NOT EXISTS qd_quick_trades (
 
 CREATE INDEX IF NOT EXISTS idx_quick_trades_user    ON qd_quick_trades(user_id);
 CREATE INDEX IF NOT EXISTS idx_quick_trades_created ON qd_quick_trades(created_at DESC);
+
+-- Migration: Add commission tracking columns to existing qd_quick_trades.
+-- (Introduced in v3.0.8. Pre-existing rows default to 0 / '' which is the
+-- accurate value — those orders were never enriched with exchange fee data.)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'qd_quick_trades' AND column_name = 'commission'
+    ) THEN
+        ALTER TABLE qd_quick_trades ADD COLUMN commission DECIMAL(24, 8) DEFAULT 0;
+        ALTER TABLE qd_quick_trades ADD COLUMN commission_ccy VARCHAR(16) DEFAULT '';
+        RAISE NOTICE 'Added commission / commission_ccy columns to qd_quick_trades';
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Polymarket (已移除 / removed in v3.0.7)

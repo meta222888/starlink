@@ -5,8 +5,8 @@
 
   <h1>QuantDinger</h1>
   <h3>你的私有化 AI 量化操作系统</h3>
-  <p><strong>图表研究、AI 市场分析、Python 指标与策略、回测与实盘执行，一套可部署栈全搞定——跑在你自己的机器上，用你自己的 API 密钥。</strong></p>
-  <p><em>可自托管量化平台：从想法与 AI 辅助写码，到回测与接交易所的实盘；可选多用户、积分与计费能力，方便团队运营落地。</em></p>
+  <p><strong>一套 Docker 栈搞定图表、多 LLM 研究、Python 策略、机构级回测与多 venue 实盘——完全自托管，你的密钥，你的数据。</strong></p>
+  <p><em>开源量化 OS：AI 辅助写码 → 回测 → 模拟 → 实盘（加密货币、IBKR、MT5、Alpaca），内置 Agent Gateway、MCP 工具，可选多租户计费。</em></p>
 
   <div align="center" style="max-width: 680px; margin: 1.25rem auto 0; padding: 20px 22px 22px; border: 1px solid #d1d9e0; border-radius: 16px;">
     <p style="margin: 0 0 14px; line-height: 1.65;">
@@ -46,10 +46,12 @@
 
   <p style="margin-top: 1.45rem; margin-bottom: 10px;">
     <a href="../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square&logo=apache" alt="License"></a>
-    <img src="https://img.shields.io/badge/Version-3.0.7-orange?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/github/v/release/brokermr810/QuantDinger?style=flat-square&color=orange&label=Version" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%20镜像%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose%20Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
     <img src="https://img.shields.io/badge/Frontend-预构建-1f8b4c?style=flat-square" alt="Frontend">
+    <img src="https://img.shields.io/badge/Agent%20Gateway-MCP%20Ready-6f42c1?style=flat-square" alt="Agent Gateway">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
     <img src="https://img.shields.io/github/stars/brokermr810/QuantDinger?style=flat-square&logo=github" alt="Stars">
   </p>
   <p style="margin: 10px 0 12px;">
@@ -67,35 +69,72 @@
 
 ## 目录
 
-[快速开始](#两分钟试用) · [相关仓库](#相关仓库) · [MCP 与 Agent 网关](#mcp-agent-gateway) · [产品概览](#产品概览) · [功能一览](#功能一览) · [视觉导览](#视觉导览) · [架构](#架构) · [安装](#安装与首次运行) · [文档](#文档导航) · [常见问题](#常见问题) · [许可](#许可与商业说明)
+[快速开始](#两分钟试用) · [技术亮点](#技术亮点) · [相关仓库](#相关仓库) · [MCP 与 Agent 网关](#mcp-agent-gateway) · [产品概览](#产品概览) · [功能一览](#功能一览) · [视觉导览](#视觉导览) · [架构](#架构) · [安装](#安装与首次运行) · [文档](#文档导航) · [常见问题](#常见问题) · [许可](#许可与商业说明)
 
 ---
 
-> QuantDinger 是**可自托管、本地优先**的量化平台：把 **AI 辅助研究**、**Python 原生策略**、**回测** 与 **实盘**（加密货币、IBKR 美股、MT5 外汇、Alpaca 美股/ETF/加密货币）放在**同一套产品**里，而不是图表、脚本、机器人和面板各自为政。
+> QuantDinger 是**可自托管、本地优先**的量化 **OS**——不是带买入按钮的聊天机器人。它在同一套生产级栈里统一 **多 LLM 研究**、**Python 原生策略引擎**、**服务端回测** 与 **多券商实盘**（10+ 加密货币 venue、IBKR、MT5、Alpaca），数据与密钥完全由你掌控。
+
+<div align="center">
+  <img src="screenshots/ezgif.com-animated-gif-maker.gif" alt="QuantDinger 快速演示：安装、登录、图表、AI 分析与策略工作流" width="920" style="border-radius: 12px; border: 1px solid #eaeef2;">
+  <p><sub><em>从零到跑通——图表、AI 研究与策略工作流，几分钟搞定。</em></sub></p>
+</div>
 
 <div align="center">
   <img src="screenshots/architecture.png" alt="QuantDinger 系统架构：行情数据 → 指标 / 信号 / 策略 / 回测 / AI 分析五层引擎 → 实盘执行，并闭合「想法 → 指标 → 策略 → 回测 → 优化 → 执行 → 监控」的量化工作流" width="960">
-  <p><sub><em>端到端架构：行情数据驱动五层引擎并对接实盘执行，从想法到监控闭环整套量化工作流。</em></sub></p>
+  <p><sub><em>五层量化引擎闭环：<strong>想法 → 指标 → 策略 → 回测 → 优化 → 执行 → 监控</strong>——行情进，审计订单出。</em></sub></p>
 </div>
+
+## 技术亮点
+
+| | QuantDinger 的差异化 |
+|---|---------------------|
+| **全栈量化 OS** | 图表、指标 IDE、AI 研究、回测、实盘机器人、快速交易、券商账户管理——一个产品，一个 Postgres 状态库。 |
+| **Agent 原生** | 一等公民 **Agent Gateway**（`/api/agent/v1`）+ PyPI 上的 **[`quantdinger-mcp`](https://pypi.org/project/quantdinger-mcp/)**——Cursor、Claude Code、Codex 可读行情、跑回测、下单（默认纸面），全链路审计。 |
+| **双策略运行时** | **`IndicatorStrategy`**（向量化 dataframe 信号 + 图表叠加）与 **`ScriptStrategy`**（事件驱动 `on_bar`、显式下单）——研究与生产同一套代码库。 |
+| **多 venue 执行** | CCXT 加密货币（Binance、OKX、Bybit…）、**IBKR** 美股、**MT5** 外汇、**Alpaca** 美股/ETF/加密货币——统一经纪商账户页，多租户会话隔离。 |
+| **生产级基础设施** | **PostgreSQL 16** + **Redis 7**、连接池、后台 Worker（挂单、组合监控、反思任务）、幂等 schema 引导、GHCR 多架构镜像（amd64/arm64）。 |
+| **安全默认开启** | 拒绝默认 `SECRET_KEY`、Agent token 哈希存储、**默认仅纸面交易**（服务端显式解锁才可实盘）、每次 Agent 调用写审计日志。 |
+| **运营商就绪** | OAuth、多用户角色、积分/会员/USDT 计费开关、AWS Marketplace AMI、7 语言文档——可在此基础上做商业化量化产品，而不只是 hobby bot。 |
 
 ## 两分钟试用
 
-> **三步：`git clone → 写一个密钥 → docker compose up`。** macOS/Linux 就是**一行命令**。下文 90% 都是参考详情，新手不用全读。
+> **最快路径：一行命令。** 无需 `git clone`、无需 `npm`、无需 Vue 源码树。GHCR 预构建镜像；`SECRET_KEY` 在后端首次启动时自动生成。
 
-**前置条件：** 已安装带 Compose 的 [Docker](https://docs.docker.com/get-docker/)（Windows/macOS 用 Docker Desktop，Linux 用 Docker Engine + Compose 插件）以及 **Git**。**不需要安装 Node.js**（仓库已含 `frontend/dist` 预构建前端）。
+**前置条件：** [Docker](https://docs.docker.com/get-docker/) + Compose v2（Windows/macOS 用 Docker Desktop）。**不需要 Node.js**。
 
-### macOS / Linux（Bash）—— 一行命令
+### 一行安装（Linux / macOS）
 
 ```bash
-git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker-compose up -d --build
+curl -fsSL https://raw.githubusercontent.com/brokermr810/QuantDinger/main/install.sh | bash
 ```
 
-若系统没有 `docker-compose` 命令，可尝试 `docker compose`（Compose V2）。
+默认安装到 `~/quantdinger`（自定义：`… | bash -s -- /opt/quantdinger`）。重复执行同一命令可拉取最新镜像并重启。
 
-<details>
-<summary><b>Windows（PowerShell）</b> —— 点击展开</summary>
+然后打开 **`http://localhost:8888`**，使用 **`quantdinger` / `123456`** 登录，并**修改默认管理员密码**。
 
-请在 **PowerShell**（不要用 CMD）中操作，并先启动 **Docker Desktop**（建议开启 WSL2 后端）。
+### 最轻：两个文件（无需 `git clone`）
+
+能访问 GHCR 与 Docker Hub（或镜像加速）时：
+
+```bash
+curl -O https://raw.githubusercontent.com/brokermr810/QuantDinger/main/docker-compose.ghcr.yml
+curl -o backend.env https://raw.githubusercontent.com/brokermr810/QuantDinger/main/backend_api_python/env.example
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+首次启动会自动生成 `SECRET_KEY`。打开 **`http://localhost:8888`**。
+
+### 标准：克隆本仓库（便于改配置与看文档）
+
+**macOS / Linux（Bash）一行命令**
+
+```bash
+git clone https://github.com/brokermr810/QuantDinger.git && cd QuantDinger && cp backend_api_python/env.example backend_api_python/.env && chmod +x scripts/generate-secret-key.sh && ./scripts/generate-secret-key.sh && docker compose pull && docker compose up -d
+```
+
+**Windows（PowerShell）** —— `git clone` 后目录名为 **`QuantDinger`**（与 GitHub 仓库一致；不区分大小写时 `cd quantdinger` 也可）：
 
 ```powershell
 git clone https://github.com/brokermr810/QuantDinger.git
@@ -104,34 +143,57 @@ Copy-Item backend_api_python\env.example -Destination backend_api_python\.env
 $key = & python -c "import secrets; print(secrets.token_hex(32))" 2>$null
 if (-not $key) { $key = & py -c "import secrets; print(secrets.token_hex(32))" 2>$null }
 if (-not $key) { $key = & python3 -c "import secrets; print(secrets.token_hex(32))" 2>$null }
-if (-not $key) { Write-Error "请安装 Python 3（安装时勾选 Add to PATH），或安装 Git for Windows 后使用下方 Git Bash + macOS/Linux 命令。" }
+if (-not $key) { Write-Error "请安装 Python 3（勾选 Add to PATH），或使用 Git Bash 运行上方 Bash 一行命令。" }
 (Get-Content backend_api_python\.env) -replace '^SECRET_KEY=.*$', "SECRET_KEY=$key" | Set-Content backend_api_python\.env -Encoding utf8
-docker-compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-若提示找不到 `docker-compose`，请改用 **`docker compose`**（中间为空格）。若未安装 Git，请安装 [Git for Windows](https://git-scm.com/download/win)。
+请用 **`docker compose`**（空格）；旧版 **`docker-compose`** 亦可。已装 **Git Bash** 可直接跑 Bash 一行命令。
 
-**更简单的办法：** 若已安装 **Git for Windows**，打开 **Git Bash**，直接复制上方 macOS/Linux 的一行命令即可，无需手写 PowerShell。
+<details>
+<summary><b>普通的 <code>docker compose up --build</code> 不会重建前端</b></summary>
+
+主 `docker-compose.yml` 中前端服务只声明 `image:`，所以 `--build` 仅会重建后端。要从本地 Vue 源码构建前端，必须叠加 `docker-compose.build.yml` 这个 override 文件（详见下文）。
+
+| 目的 | 命令 |
+|------|------|
+| 首次 / 日常启动 | `docker compose pull` → `docker compose up -d` |
+| 只改了后端代码 | `docker compose up -d --build backend` |
+| 二开 Vue 前端 | 将 [QuantDinger-Vue](https://github.com/brokermr810/QuantDinger-Vue) 克隆到 `./QuantDinger-Vue/` 后再 `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build` |
+
+</details>
+
+<details>
+<summary><b><code>docker pull</code> 很慢或失败（国内 / VPN）</b></summary>
+
+系统 VPN **通常不会**代理 Docker Desktop。请在 **Docker Desktop → 设置 → Proxies** 填写本地代理（如 Clash `http://127.0.0.1:7890`），或在**仓库根目录** `.env` 增加：
+
+```ini
+IMAGE_PREFIX=docker.m.daocloud.io/library/
+```
+
+再执行 `docker compose pull`。`content size of zero`、`connectex` 访问 `registry-1.docker.io` 失败等，属于镜像仓库网络问题，不是业务代码错误。
 
 </details>
 
 ---
 
-启动后打开 **`http://localhost:8888`**，使用 **`quantdinger` / `123456`** 登录，并在任何真实业务前**修改默认管理员密码**。完事——可以开始用了。
+打开 **`http://localhost:8888`**，默认 **`quantdinger` / `123456`** 登录，正式使用前请**修改管理员密码**。
 
-需要逐项配置、首次自检、排错说明，再去看下文 **[安装与首次运行](#安装与首次运行)**（其他人可跳过）。
+更多步骤与排错见 **[安装与首次运行](#安装与首次运行)**。
 
 ## 相关仓库
 
-本单仓提供 **后端**、**Docker Compose** 部署栈、**文档**，以及 `frontend/dist` 中的 **预构建 Web 前端**。若要改 UI 源码或使用移动端，请配合下列仓库：
+本仓提供 **后端**、**Docker Compose** 部署栈与 **文档**；前端镜像由 Vue 仓独立发布到 GHCR。如需改 UI 源码或使用移动端，请配合：
 
 | 仓库 | 说明 |
 |------|------|
-| **[QuantDinger](https://github.com/brokermr810/QuantDinger)**（本仓库） | 后端（Flask/Python）、部署、文档、预构建 Web 资源 |
-| **[QuantDinger-Vue](https://github.com/brokermr810/QuantDinger-Vue)** | **Web 前端源码**（Vue）—主题、二次开发、`npm run build` 后替换 `frontend/dist` |
+| **[QuantDinger](https://github.com/brokermr810/QuantDinger)**（本仓库） | 后端（Flask/Python）、Compose 部署栈、文档 |
+| **[QuantDinger-Vue](https://github.com/brokermr810/QuantDinger-Vue)** | **Web 前端源码**（Vue）—— 打 `v*` tag 即自动构建并推送 `ghcr.io/brokermr810/quantdinger-frontend` |
 | **[QuantDinger-Mobile](https://github.com/brokermr810/QuantDinger-Mobile)** | **开源移动端**，连接你自托管或 SaaS 的同一套后端 |
 
-**说明：** 只有从 **QuantDinger-Vue** 自行构建 Web 时才需要 Node.js；默认 Docker 快速上手不需要。
+**说明：** 只有想从 **QuantDinger-Vue** 自行构建 Web 时才需要 Node.js；默认 Docker 快速上手会直接拉取已发布镜像。
 
 <h2 id="mcp-agent-gateway">用 AI Agent 接入（Cursor / Claude Code / Codex / MCP）</h2>
 
@@ -160,15 +222,17 @@ QuantDinger 自带 **Agent Gateway**（`/api/agent/v1`）和已发布到 PyPI �
 
 ## 产品概览
 
-QuantDinger 是**可自托管**的量化操作系统：**AI 辅助研究**、**Python 原生策略**（`IndicatorStrategy` + `ScriptStrategy`）、**回测**与**实盘**（加密货币、IBKR、MT5、Alpaca），并可选多用户、通知、积分与 USDT 计费。用**一套 Compose** 替代「图表 + Notebook + 机器人 + 外挂 LLM」的拼装，凭证在 **PostgreSQL** 与 **`.env`**。
+QuantDinger 是**可自托管的量化操作系统**——不是单一用途的交易机器人。它用**一套可审计的 Docker 原生栈**替代 TradingView + Jupyter + ChatGPT + 交易所脚本 的拼装：多 LLM 研究、Python 策略 IDE、服务端回测，以及跨 crypto / 股票 / 外汇 / ETF 的实盘，并可选多用户计费供运营商二次售卖。
 
 | 常见 DIY 拼装 | QuantDinger |
 |--------------|-------------|
-| 聊天 AI 与执行脱节 | 分析、NL→代码、回测与执行在同一产品闭环 |
-| 工具链分散 | Nginx + Web UI、Flask API、Worker、交易所/大模型适配器一体 |
-| 密钥与数据难自控 | 自建基础设施，交易所与 LLM 密钥归你 |
+| 聊天 AI 与执行脱节 | 研究、NL→代码、回测与下单在同一产品，共享 Postgres 状态 |
+| 5～10 个工具手工对接 | Nginx + Vue UI、Flask API、Redis Worker、交易所/LLM 适配器一体 |
+| SaaS 托管你的密钥 | 自建基础设施，交易所与 LLM 密钥归你，后端 Apache 2.0 |
+| 脚本 bot 无审计 | Agent Gateway 带 scope、限流与 append-only 审计日志 |
+| 研究代码 ≠ 实盘代码 | `IndicatorStrategy` 与 `ScriptStrategy` 共享同一运行时与数据层 |
 
-**适合：** 交易员与量化研究者、Python 策略作者、需要内部或商业化量化产品的小团队。
+**适合：** 独立量化交易者、Python 策略作者、自营/小团队，以及在私有基础设施上搭建白标量化产品的运营商。
 
 ## 视觉导览
 
@@ -200,17 +264,21 @@ QuantDinger 是**可自托管**的量化操作系统：**AI 辅助研究**、**P
 
 ## 功能一览
 
-- **研究与 AI** — 多 LLM 分析、自选、分析历史；可选协同/校准；NL→指标/策略；回测后 AI 建议。**[Agent 网关 + MCP](#mcp-agent-gateway)** 对接 Cursor / Claude Code / Codex 等。
-- **构建** — `IndicatorStrategy`（表格式信号、图表叠加）与 `ScriptStrategy`（`on_bar`、显式下单）；专业 K 线界面。
-- **验证** — 服务端回测、指标、资金曲线、策略快照。
-- **运营** — 加密货币执行、快速交易、IBKR / MT5 / Alpaca（美股、ETF、加密货币），通知接 Telegram、邮件、短信、Discord、Webhook。**统一经纪商账户页**集中管理三家券商的连接、账户 KPI、持仓与挂单撤单。
-- **平台** — Docker Compose、Postgres、Redis、OAuth、多用户形态、积分/会员/USDT 计费开关。
+- **研究与 AI** — 多 LLM 协同分析、自选、机会雷达、NL→指标/策略、回测后 AI 提示；可选置信度校准。**[Agent 网关 + MCP](#mcp-agent-gateway)** 对接 Cursor / Claude Code / Codex，支持 scoped token 与 SSE 任务流。
+- **构建** — 专业 K 线图表；`IndicatorStrategy`（dataframe `buy`/`sell` 信号）与 `ScriptStrategy`（`on_bar`、`ctx.buy()` / `ctx.sell()`）；AI 生成代码作起点，Python 为最终真相源。
+- **验证** — 服务端回测：资金曲线、回撤指标、成交日志、策略快照——非纯前端「假回测」。
+- **运营** — 实盘策略机器人、快速交易、**10+ 加密货币交易所**（CCXT）、**IBKR** / **MT5** / **Alpaca**（美股、ETF、加密货币）；统一**经纪商账户页**；Telegram、邮件、短信、Discord、Webhook 通知。
+- **平台** — Docker Compose + GHCR 镜像、PostgreSQL 16、Redis 7、OAuth、多用户 RBAC、积分/会员/USDT 计费开关、AWS Marketplace AMI、7 语言文档。
 
 ## 架构
 
-**栈结构：** Nginx 提供预构建 Vue（`frontend/dist`）；**Flask** 承载策略/AI/计费等服务；**PostgreSQL** 存状态；**Redis** 支撑 Worker。交易所、经纪商、大模型与支付通过环境变量接入。加密货币**行情**与**下单执行**路径分层设计。
+**设计原则：** **行情采集**、**策略/回测计算**、**订单执行** 分层解耦——除非你显式上线策略，否则研究路径不会与真实资金共用代码。
 
-**运行时（简述）：** 数据进入回测/策略引擎 → 实盘运行时产生下单意图 → 交易所适配器执行；挂单派发与行情采集解耦。
+**栈结构：** Nginx 提供预构建 Vue SPA（`ghcr.io/brokermr810/quantdinger-frontend`）；**Flask + Gunicorn** API 承载策略、AI、计费与 Agent 服务；**PostgreSQL 16** 为系统记录库；**Redis 7** 支撑缓存与 Worker 协调。交易所、经纪商、LLM、支付通过 env 驱动适配器接入——换供应商无需 fork 核心代码。
+
+**运行时流程：** 行情 → 指标/信号层 → 策略引擎 → 回测或实盘运行时 → venue 专属执行适配器；挂单由后台 Worker 派发，带健康检查与重试。
+
+**部署面：** 一行 `install.sh`、零仓库 GHCR Compose、完整仓库 Compose（本地构建后端）、AWS Marketplace AMI，以及 [ai.quantdinger.com](https://ai.quantdinger.com) SaaS 试用。
 
 ### 系统架构图
 
@@ -272,7 +340,7 @@ flowchart LR
 
 > **已经按 [两分钟试用](#两分钟试用) 跑起来了？** 直接跳过本节——只是把同样的流程拆成给首次部署、想搞懂每个配置项的人看的逐步清单。
 
-下文对应常见「本地部署」顺序：**准备宿主机 → 拉代码 → 配密钥 → 起栈 → 自检 → 加固 → 可选接入大模型**。**不需要 Node.js**：前端已预构建在 `frontend/dist`，由 `frontend` 容器内 Nginx 提供。
+下文对应常见「本地部署」顺序：**准备宿主机 → 拉代码 → 配密钥 → 起栈 → 自检 → 加固 → 可选接入大模型**。**不需要 Node.js**：`frontend` 服务直接从 GHCR 拉取 `ghcr.io/brokermr810/quantdinger-frontend` 并由 Nginx 提供，无需本地构建。
 
 ### 环境准备
 
@@ -315,30 +383,53 @@ cp backend_api_python/env.example backend_api_python/.env
 ### 4）启动
 
 ```bash
-docker-compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-默认服务：**`postgres`**、**`redis`**、**`backend`**、**`frontend`**（详见仓库根目录 `docker-compose.yml` 与健康检查）。
+- **`frontend`**：拉取 `ghcr.io/brokermr810/quantdinger-frontend:latest`，无需本地 Vue 目录。
+- **`backend`**：首次若无本地镜像，会从 `./backend_api_python` 自动构建。
+- 想用本地 Vue 源码做 UI 开发，请将 **QuantDinger-Vue** 克隆到 `./QuantDinger-Vue/`，并在命令中追加 `-f docker-compose.build.yml`（见下文 *从 Vue 源码构建前端*）。
 
-#### 备选方案：零仓库安装（GHCR 预构建镜像）
+默认服务：**`postgres`**、**`redis`**、**`backend`**、**`frontend`**。
 
-如果不想 clone 整个仓库，可使用 GHCR 变体——后端和前端都是预构建的多架构（amd64/arm64）镜像：
+#### 备选方案：零仓库安装（最轻，GHCR 预构建）
+
+后端与前端均为预构建多架构（amd64/arm64）镜像，无需 `git clone`：
 
 ```bash
 curl -O https://raw.githubusercontent.com/brokermr810/QuantDinger/main/docker-compose.ghcr.yml
 curl -o backend.env https://raw.githubusercontent.com/brokermr810/QuantDinger/main/backend_api_python/env.example
+docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 后端 entrypoint 会在首次启动时自动生成随机 `SECRET_KEY` 并幂等地应用 `migrations/init.sql`。编辑 `backend.env` 用于持久化覆盖（API 密钥、OAuth、券商凭据等）。编排参数（pin 版本、换镜像源等）放在独立的 `.env`（可选）：
 
 ```env
-IMAGE_TAG=v3.0.7
+# 常规场景：前后端同步 pin 到同一个 tag
+IMAGE_TAG=3.0.10
+
+# 进阶（按需启用）：单独覆盖某一边，另一边仍跟随 IMAGE_TAG
+# BACKEND_TAG=v3.0.9
+# FRONTEND_TAG=v3.1.0-rc1
+
 # BACKEND_IMAGE=ghcr.io/<你的fork>/quantdinger-backend     # 可选，用于 fork
 # FRONTEND_IMAGE=ghcr.io/<你的fork>/quantdinger-frontend
 ```
 
-默认镜像：`ghcr.io/brokermr810/quantdinger-backend:latest` + `ghcr.io/brokermr810/quantdinger-frontend:latest`。
+Tag 解析优先级：`BACKEND_TAG` / `FRONTEND_TAG` → `IMAGE_TAG` → compose 默认值 (`latest`)。无根目录 `.env` 时，两个 compose 文件都拉 `ghcr.io/brokermr810/quantdinger-{backend,frontend}:latest`。想固定到某个版本就设置 `IMAGE_TAG`（前后端一起）或 `BACKEND_TAG` / `FRONTEND_TAG`（单边）—— 可用 tag 见 [GitHub Releases](https://github.com/brokermr810/QuantDinger/releases)。
+
+#### 备选方案：从 Vue 源码本地构建前端
+
+如果你有 **QuantDinger-Vue** 仓库的访问权限，想改 UI 源码（换主题、二开、调试），把它克隆到本仓根目录下的 `./QuantDinger-Vue/`（已 gitignore），让 Compose 直接从那里构建：
+
+```bash
+git clone https://github.com/brokermr810/QuantDinger-Vue.git QuantDinger-Vue
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+主 `docker-compose.yml` 只声明拉镜像；override 文件 `docker-compose.build.yml` 额外加上本地 `build:` 块。不叠加 override 时，`./QuantDinger-Vue/` 不需要存在。想换源码路径就设 `FRONTEND_SRC_PATH=/abs/path/to/QuantDinger-Vue`，或者在根目录 `.env` 里加 `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` 省掉长长的 `-f -f` 写法。本地构建出来的镜像 tag 仍走 `FRONTEND_TAG` / `IMAGE_TAG` 那套规则，跟其它服务无缝衔接，不用改其它配置。
 
 ### 5）验证与登录
 
@@ -359,6 +450,8 @@ IMAGE_TAG=v3.0.7
 
 AI 分析、自然语言生成代码等需至少配置一个 LLM 供应商。打开 `backend_api_python/env.example` 中的 **AI / LLM** 小节，将对应变量复制到你的 `.env`（例如 `LLM_PROVIDER` + `OPENROUTER_API_KEY`）。修改后需**重启 backend 容器**。
 
+现货全仓平仓若因手续费导致「可卖数量略小于持仓」，可在管理后台 **设置 → 实盘交易（Live Trading）** 调整 `SPOT_CLOSE_SAFETY_RATIO`（平仓安全系数，默认 `0.998`）与 `SPOT_OPEN_QUOTE_BUFFER`（开仓占用 USDT 比例，默认 `0.995`）；也可直接写入 `backend_api_python/.env`。保存设置后会热加载，无需重建镜像。
+
 ### 7）Windows 补充说明
 
 请使用 **Docker Desktop**，并在仓库根目录用 **PowerShell** 执行与上文「两分钟试用」中 Windows 相同的步骤。若 `py` 不在 PATH，请改用 `python` 或 `python3` 生成密钥；保存 `.env` 时建议使用 UTF-8，避免编辑器破坏换行。
@@ -371,7 +464,9 @@ AI 分析、自然语言生成代码等需至少配置一个 LLM 供应商。打
 
 | 现象 | 排查 |
 |------|------|
-| backend 立刻退出 | `SECRET_KEY` 仍为默认值，或 `.env` 语法错误；查看 `docker-compose logs backend`。 |
+| `QuantDinger-Vue` 路径不存在 | 加了 `-f docker-compose.build.yml` 但未克隆 Vue 源码；去掉 override（直接 `docker compose up -d`），或先克隆到 `./QuantDinger-Vue/`。 |
+| 拉取 `redis`/`python`/`node` 失败、`content size of zero` | Docker 未走代理或镜像站异常；根目录 `.env` 设 `IMAGE_PREFIX=docker.m.daocloud.io/library/`，并在 Docker Desktop 配置 Proxies。 |
+| backend 立刻退出 | `SECRET_KEY` 仍为默认值，或 `.env` 语法错误；`docker compose logs backend`。 |
 | 浏览器打不开或 API 报错 | `FRONTEND_URL` / 访问域名不一致；本机防火墙或未映射端口。 |
 | 端口被占用 | 本机已有其他 Postgres/Redis/5000/8888 服务；调整根目录 `.env` 中对应变量。 |
 | 大量实盘策略提示无法启动 | 提高 `backend_api_python/.env` 中 `STRATEGY_MAX_THREADS` 并重启 API（见 `env.example` 注释）。 |
@@ -379,11 +474,13 @@ AI 分析、自然语言生成代码等需至少配置一个 LLM 供应商。打
 ### 常用 Docker 命令
 
 ```bash
-docker-compose ps
-docker-compose logs -f backend
-docker-compose restart backend
-docker-compose up -d --build
-docker-compose down
+docker compose ps
+docker compose logs -f backend
+docker compose restart backend
+docker compose pull
+docker compose up -d
+docker compose up -d --build backend   # 仅后端改代码后
+docker compose down
 ```
 
 ### 可选：仓库根目录 `.env`（仅 Compose）
@@ -492,12 +589,10 @@ QuantDinger/
 │   ├── migrations/init.sql  # 数据库初始化
 │   ├── env.example          # 主配置模板
 │   └── Dockerfile
-├── frontend/                # 预构建 Web（源码：QuantDinger-Vue；移动端：QuantDinger-Mobile）
-│   ├── dist/
-│   ├── Dockerfile
-│   └── nginx.conf
 ├── docs/                    # 产品、策略与部署文档
+├── install.sh               # 一行 GHCR 安装（curl | bash）
 ├── docker-compose.yml
+├── docker-compose.ghcr.yml  # 零仓库部署——前后端均来自 GHCR
 ├── LICENSE
 └── TRADEMARKS.md
 ```
@@ -563,7 +658,9 @@ QuantDinger/
 
 ## 交易所合作注册链接
 
-这些链接也可以在应用内通过 **个人中心 -> 开户** 查看。是否享受手续费返佣，以各交易所规则为准。
+这些链接也可以在应用内通过 **个人中心 → 立即开户** 或 **实盘券商账户 → 立即开户** 查看。是否享受手续费返佣，以各平台规则为准。
+
+### 加密货币交易所（API 密钥）
 
 | 交易所 | 注册链接 |
 |--------|----------|
@@ -571,8 +668,16 @@ QuantDinger/
 | Bitget | [注册开户](https://partner.hdmune.cn/bg/7r4xz8kd) |
 | Bybit | [注册开户](https://partner.bybit.com/b/DINGER) |
 | OKX | [注册开户](https://www.xqmnobxky.com/join/QUANTDINGER) |
-| Gate.io | [注册开户](https://www.gateport.company/share/DINGER) |
+| Gate.io | [注册开户](https://www.gateport.business/share/DINGER) |
 | HTX | [注册开户](https://www.htx.com/invite/zh-cn/1f?invite_code=dinger) |
+
+### 外汇 / CFD — TMGM（MetaTrader 5）
+
+| 券商 | 注册链接 |
+|------|----------|
+| TMGM（MT5） | [注册开户](https://portal.tmgm.com/register?node=MTM0Mzc5&language=en) |
+
+在 TMGM 完成开户后，请安装 MT5，并在 **个人中心 → 交易所配置** 或 **实盘券商账户** 中填写服务器与账号。
 
 ## 许可与商业说明
 
@@ -629,5 +734,9 @@ QuantDinger 建立在优秀的开源生态之上，特别感谢以下项目：
 - [ECharts](https://echarts.apache.org/)
 - [Capacitor](https://capacitorjs.com/)
 - [bip-utils](https://github.com/ebellocchia/bip_utils)
+
+## P.S. 关于名字
+
+QuantDinger 是向物理学家 **[薛定谔（Erwin Schrödinger）](https://zh.wikipedia.org/wiki/%E5%9F%83%E5%B0%94%E6%B8%A9%C2%B7%E8%96%9B%E5%AE%9A%E8%B0%94)** 的一份小小致敬 —— 名字里的 "-dinger"，正是 "Schrödinger" 的尾巴。盒子里的猫是个思想实验；**每一条还没下单的策略**，都是它的小型版本 —— 在被市场执行之前，**既盈利也亏损**。回测打开盒子，实盘塌缩波函数。请谨慎下单。
 
 <p align="center"><sub>如果 QuantDinger 对你有帮助，欢迎点一个 GitHub Star。</sub></p>

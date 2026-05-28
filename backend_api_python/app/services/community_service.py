@@ -1817,9 +1817,9 @@ class CommunityService:
                         cur.execute(f"""
                             SELECT
                                 COUNT(*) as trade_count,
-                                SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as win_count,
-                                SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) as loss_count,
-                                SUM(profit) as total_profit
+                                SUM(CASE WHEN (COALESCE(profit, 0) - COALESCE(commission, 0)) > 0 THEN 1 ELSE 0 END) as win_count,
+                                SUM(CASE WHEN (COALESCE(profit, 0) - COALESCE(commission, 0)) < 0 THEN 1 ELSE 0 END) as loss_count,
+                                SUM(COALESCE(profit, 0) - COALESCE(commission, 0)) as total_profit
                             FROM qd_strategy_trades
                             WHERE strategy_id IN ({placeholders})
                               AND profit IS NOT NULL

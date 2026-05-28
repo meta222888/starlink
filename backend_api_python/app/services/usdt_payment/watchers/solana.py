@@ -1,12 +1,26 @@
 """Solana SPL-USDT watcher (raw JSON-RPC, no extra dependency).
 
 Strategy:
-  1. ``getSignaturesForAddress(wallet, limit=20)`` to grab recent signatures
-     involving the receiving wallet.
-  2. For each signature, ``getTransaction(sig, encoding=jsonParsed)``.
-  3. Walk ``meta.preTokenBalances`` / ``meta.postTokenBalances`` to find the
-     delta on the USDT mint where the receiving wallet is the owner and the
-     delta equals the order amount.
+  1. Resolve the owner's USDT-mint **Associated Token Account (ATA)** with
+     ``getTokenAccountsByOwner(wallet, {mint: USDT_MINT})``. This is the key
+     correctness step: SPL transfers to an already-existing ATA do **not**
+     reference the receiving wallet in ``accountKeys`` (only the ATA does),
+     so ``getSignaturesForAddress(WALLET)`` returns no matching signatures
+     and the reconciler reports ``no_match empty_signatures`` even though
+     the funds arrived. Solana's RPC layer indexes signatures by
+     account-key membership; the wallet only shows up in the "create ATA"
+     instruction of the very first incoming transfer, never in subsequent
+     ones. Querying the ATA fixes this.
+  2. ``getSignaturesForAddress(watch_addr, limit=25)`` against the resolved
+     ATA (or against the operator-supplied address as-is when it already
+     looks like a token account / when ATA resolution fails).
+  3. For each signature, ``getTransaction(sig, encoding=jsonParsed)`` and
+     compute ``post - pre`` raw token amount **at the accountIndex of the
+     watched account** in the combined account-key table (static keys +
+     ALT-loaded writable + ALT-loaded readonly). Matching by accountIndex
+     instead of by ``owner == wallet`` is more robust because the JSON-RPC
+     ``owner`` field is only populated for the original Token program in
+     some node implementations; the accountIndex link is canonical.
 
 This avoids hard-pinning solders / solana-py for the backend; we only need
 plain HTTP. The Solana mainnet public endpoint is fine for the volumes a
@@ -63,39 +77,95 @@ def _rpc(method: str, params: List[Any]) -> Dict[str, Any]:
     return resp.json() or {}
 
 
-def _delta_for_owner(
+def _resolve_usdt_ata(wallet: str, mint: str) -> Optional[str]:
+    """Return the USDT-mint Associated Token Account pubkey owned by
+    ``wallet``, or ``None`` if the wallet has no such account yet (e.g.
+    fresh wallet that's never received USDT) or if ``wallet`` is actually
+    already a token account (in which case ``getTokenAccountsByOwner``
+    returns an empty list — token accounts can't own other token accounts).
+
+    Errors are swallowed and turned into ``None`` so the caller can fall
+    back to treating the input address as a signature query target;
+    that fallback also covers the "operator manually entered the ATA"
+    case.
+    """
+    try:
+        resp = _rpc(
+            "getTokenAccountsByOwner",
+            [wallet, {"mint": mint}, {"encoding": "jsonParsed"}],
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "USDT SOL ATA-resolve network error wallet=%s: %s",
+            wallet, exc,
+        )
+        return None
+    err = resp.get("error")
+    if err:
+        logger.info("USDT SOL getTokenAccountsByOwner error wallet=%s: %s", wallet, err)
+        return None
+    accounts = ((resp.get("result") or {}).get("value")) or []
+    if not accounts:
+        return None
+    pubkey = (accounts[0] or {}).get("pubkey") or ""
+    return pubkey or None
+
+
+def _extract_account_keys(tx: Dict[str, Any]) -> List[str]:
+    """Return the canonical account-index → pubkey table for a parsed tx.
+
+    Solana v0 transactions can reference accounts via Address Lookup
+    Tables, whose pubkeys appear in ``meta.loadedAddresses`` *after* the
+    static ``transaction.message.accountKeys`` block. ``preTokenBalances``
+    / ``postTokenBalances`` index into the **combined** table, so we have
+    to concatenate them in this exact order to keep accountIndex math
+    correct on ALT-using transactions.
+    """
+    keys: List[str] = []
+    txi = tx.get("transaction") or {}
+    msg = (txi.get("message") or {}) if isinstance(txi, dict) else {}
+    for entry in msg.get("accountKeys") or []:
+        if isinstance(entry, dict):
+            pk = entry.get("pubkey")
+            if pk:
+                keys.append(str(pk))
+        elif isinstance(entry, str):
+            keys.append(entry)
+    meta = tx.get("meta") or {}
+    loaded = meta.get("loadedAddresses") or {}
+    for entry in loaded.get("writable") or []:
+        keys.append(str(entry))
+    for entry in loaded.get("readonly") or []:
+        keys.append(str(entry))
+    return keys
+
+
+def _delta_for_watched_account(
     pre: List[Dict[str, Any]],
     post: List[Dict[str, Any]],
     *,
     mint: str,
-    owner: str,
+    watched_account_index: int,
 ) -> int:
-    """Return ``post - pre`` raw token amount for (owner, mint).
-
-    Token-balance entries reference accounts by ``accountIndex`` plus
-    ``mint`` + ``owner`` triples; the same accountIndex shows up in both
-    arrays when the balance changed, so we can pair them by accountIndex.
+    """Return ``post - pre`` raw token amount at ``watched_account_index``
+    for the given mint. Entries that don't match the mint are skipped —
+    this guards against the rare case of an ALT slot at the same index
+    being reused for a different mint inside one tx.
     """
-    def collect(arr: List[Dict[str, Any]]) -> Dict[int, int]:
-        out: Dict[int, int] = {}
+    def amount_at(arr: List[Dict[str, Any]]) -> int:
         for entry in arr or []:
             try:
+                if int(entry.get("accountIndex")) != watched_account_index:
+                    continue
                 if (entry.get("mint") or "").strip() != mint:
                     continue
-                if (entry.get("owner") or "").strip() != owner:
-                    continue
-                idx = int(entry.get("accountIndex"))
-                amount = entry.get("uiTokenAmount") or {}
-                raw = int(amount.get("amount") or 0)
-                out[idx] = out.get(idx, 0) + raw
+                ui = entry.get("uiTokenAmount") or {}
+                return int(ui.get("amount") or 0)
             except (TypeError, ValueError):
                 continue
-        return out
+        return 0
 
-    pre_map = collect(pre)
-    post_map = collect(post)
-    keys = set(pre_map.keys()) | set(post_map.keys())
-    return sum(post_map.get(k, 0) - pre_map.get(k, 0) for k in keys)
+    return amount_at(post) - amount_at(pre)
 
 
 def find_incoming(address: str, amount: Decimal, created_at: Optional[datetime]) -> WatcherResult:
@@ -108,20 +178,45 @@ def find_incoming(address: str, amount: Decimal, created_at: Optional[datetime])
     ct = _parse_created_at(created_at)
     min_ts = int(ct.timestamp()) - 60 if ct else None
 
+    # Step 1: resolve the watched account.
+    #
+    # The configured ``USDT_SOL_ADDRESS`` is documented as a wallet
+    # address (matches what env.example tells operators to enter). For
+    # SPL transfers to an existing ATA, the wallet itself is **not** in
+    # the tx's accountKeys, so ``getSignaturesForAddress(wallet)`` would
+    # miss every normal deposit and the order would never leave
+    # ``pending``. We resolve the wallet's USDT ATA and query that
+    # instead.
+    #
+    # If the operator manually entered the ATA in env (unusual but
+    # valid), ``getTokenAccountsByOwner`` returns an empty list because
+    # token accounts can't own other token accounts. In that case we
+    # fall through to using the original address — which is now the ATA
+    # we wanted anyway.
+    ata = _resolve_usdt_ata(address, mint)
+    watch_addr = ata or address
+    resolved_via_ata = ata is not None
+
     try:
-        sigs_resp = _rpc("getSignaturesForAddress", [address, {"limit": 25}])
+        sigs_resp = _rpc("getSignaturesForAddress", [watch_addr, {"limit": 25}])
     except requests.RequestException as exc:
         return None, f"solana_rpc_error:{type(exc).__name__}:{exc}"
 
     err = sigs_resp.get("error")
     if err:
-        return None, f"solana_rpc_error:{err.get('code')}:{err.get('message')!r}"
+        return None, (
+            f"solana_rpc_error:{err.get('code')}:{err.get('message')!r} "
+            f"watch_addr={watch_addr} resolved_ata={resolved_via_ata}"
+        )
     signatures = sigs_resp.get("result") or []
     if not signatures:
-        return None, "no_match empty_signatures"
+        return None, (
+            f"no_match empty_signatures watch_addr={watch_addr} "
+            f"resolved_ata={resolved_via_ata}"
+        )
 
     scanned = 0
-    before_order = wrong_amount = parse_err = 0
+    before_order = wrong_amount = parse_err = key_missing = 0
 
     for sig_entry in signatures:
         try:
@@ -138,9 +233,21 @@ def find_incoming(address: str, amount: Decimal, created_at: Optional[datetime])
             meta = tx.get("meta") or {}
             if meta.get("err"):
                 continue
+            account_keys = _extract_account_keys(tx)
+            try:
+                target_idx = account_keys.index(watch_addr)
+            except ValueError:
+                # watch_addr isn't referenced by this tx (can happen for
+                # signatures returned by RPC for unrelated reasons, e.g.
+                # an unrelated tx that happened to mention the address
+                # via a CPI inner instruction we didn't decode).
+                key_missing += 1
+                continue
             pre = meta.get("preTokenBalances") or []
             post = meta.get("postTokenBalances") or []
-            delta = _delta_for_owner(pre, post, mint=mint, owner=address)
+            delta = _delta_for_watched_account(
+                pre, post, mint=mint, watched_account_index=target_idx,
+            )
             scanned += 1
             if delta < target - 1 or delta > target + 1:
                 wrong_amount += 1
@@ -151,9 +258,15 @@ def find_incoming(address: str, amount: Decimal, created_at: Optional[datetime])
                 from_addr="",   # SPL has multiple senders possible; not needed for matching
                 to_addr=address,
                 value_smallest_unit=delta,
-                raw={"signature": sig, "blockTime": block_time, "meta_keys": list(meta.keys())},
+                raw={
+                    "signature": sig,
+                    "blockTime": block_time,
+                    "watch_addr": watch_addr,
+                    "resolved_ata": resolved_via_ata,
+                    "meta_keys": list(meta.keys()),
+                },
             )
-            return transfer, f"ok scanned={scanned}"
+            return transfer, f"ok scanned={scanned} watch_addr={watch_addr}"
         except (TypeError, ValueError):
             parse_err += 1
         except requests.RequestException as exc:
@@ -161,7 +274,9 @@ def find_incoming(address: str, amount: Decimal, created_at: Optional[datetime])
 
     note = (
         f"no_match scanned={scanned} target_raw={target} "
-        f"before_order={before_order} wrong_amount={wrong_amount} parse_err={parse_err}"
+        f"before_order={before_order} wrong_amount={wrong_amount} "
+        f"parse_err={parse_err} key_missing={key_missing} "
+        f"watch_addr={watch_addr} resolved_ata={resolved_via_ata}"
     )
     return None, note
 

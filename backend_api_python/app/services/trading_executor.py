@@ -34,6 +34,51 @@ from app.services.strategy_script_runtime import (
 logger = get_logger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "on", "enabled"):
+        return True
+    if s in ("0", "false", "no", "off", "disabled", ""):
+        return False
+    return bool(default)
+
+
+def normalize_trading_execution_modes(trading_config: Optional[Dict[str, Any]]) -> None:
+    """
+    Align live execution knobs with the UI ``strict_mode`` toggle.
+
+    ``strict_mode=True``  → backtest-like: closed-bar signals only.
+    ``strict_mode=False`` → allow intra-bar (aggressive) signals + immediate entry triggers.
+    """
+    if not isinstance(trading_config, dict):
+        return
+    tc = trading_config
+    has_strict_toggle = "strict_mode" in tc or "strictMode" in tc
+    strict = _coerce_bool(tc.get("strict_mode", tc.get("strictMode")), default=False)
+    tc["strict_mode"] = strict
+    if has_strict_toggle:
+        if strict:
+            tc["signal_mode"] = "confirmed"
+            tc["exit_signal_mode"] = "confirmed"
+        else:
+            tc["signal_mode"] = "aggressive"
+            tc["exit_signal_mode"] = "aggressive"
+            tc["entry_trigger_mode"] = "immediate"
+    elif strict:
+        tc.setdefault("exit_signal_mode", "confirmed")
+        tc.setdefault("signal_mode", "confirmed")
+    else:
+        tc.setdefault("signal_mode", "aggressive")
+        tc.setdefault("exit_signal_mode", "aggressive")
+        tc.setdefault("entry_trigger_mode", "immediate")
+
+
 class TradingExecutor:
     """实时交易执行器 (Signal Provider Mode)"""
     
@@ -466,27 +511,26 @@ class TradingExecutor:
         """
         try:
             with self.lock:
-                if strategy_id not in self.running_strategies:
-                    logger.warning(f"Strategy {strategy_id} is not running")
-                    return False
-                
-                # 标记策略为停止状态
+                had_thread = strategy_id in self.running_strategies
+
+                # Always mark DB stopped (also when auto-stop runs without a live thread).
                 with get_db_connection() as db:
                     cursor = db.cursor()
                     cursor.execute(
                         "UPDATE qd_strategies_trading SET status = 'stopped' WHERE id = %s",
-                        (strategy_id,)
+                        (strategy_id,),
                     )
                     db.commit()
                     cursor.close()
-                
-                # 从运行列表中移除（线程会在下次循环检查状态时退出）
-                del self.running_strategies[strategy_id]
-                self._exchange_fee_cache.pop(strategy_id, None)
-                
-                logger.info(f"Strategy {strategy_id} stopped")
-                self._console_print(f"[strategy:{strategy_id}] stopped (requested)")
-                append_strategy_log(strategy_id, "info", "Strategy stop requested (run flag cleared)")
+
+                if had_thread:
+                    del self.running_strategies[strategy_id]
+                    self._exchange_fee_cache.pop(strategy_id, None)
+                    logger.info(f"Strategy {strategy_id} stopped")
+                    self._console_print(f"[strategy:{strategy_id}] stopped (requested)")
+                    append_strategy_log(strategy_id, "info", "Strategy stop requested (run flag cleared)")
+                else:
+                    logger.info(f"Strategy {strategy_id} marked stopped in DB (no active thread)")
                 return True
                 
         except Exception as e:
@@ -611,6 +655,84 @@ class TradingExecutor:
                 cur.close()
         except Exception as e:
             logger.warning(f"Persist script runtime state failed: {e}")
+
+    def _bot_type_key(self, trading_config: Optional[Dict[str, Any]]) -> str:
+        return str((trading_config or {}).get("bot_type") or "").strip().lower()
+
+    def _bot_has_market_guards(self, trading_config: Optional[Dict[str, Any]]) -> bool:
+        return self._bot_type_key(trading_config) in ("grid", "martingale")
+
+    def _prepare_grid_bot_before_bar(
+        self,
+        script_ctx: StrategyScriptContext,
+        trading_config: Dict[str, Any],
+        *,
+        price: float,
+        high: float,
+        low: float,
+        is_closed_bar: bool,
+    ) -> None:
+        if not self._bot_has_market_guards(trading_config):
+            return
+        try:
+            from app.services.bot_scripts.grid_runtime import prepare_bot_market_guards
+
+            bars_df = getattr(script_ctx, "_bars_df", None)
+            prepare_bot_market_guards(
+                self._bot_type_key(trading_config),
+                script_ctx._params,
+                price=float(price or 0),
+                high=float(high or price or 0),
+                low=float(low or price or 0),
+                bars_df=bars_df,
+                is_closed_bar=bool(is_closed_bar),
+            )
+        except Exception as e:
+            logger.warning(f"Bot market-guard prepare failed: {e}")
+
+    def _post_process_grid_bot_signals(
+        self,
+        signals: List[Dict[str, Any]],
+        script_ctx: StrategyScriptContext,
+        trading_config: Dict[str, Any],
+        *,
+        price: float,
+        timestamp: int,
+    ) -> List[Dict[str, Any]]:
+        if not self._bot_has_market_guards(trading_config):
+            return signals
+        try:
+            from app.services.bot_scripts.grid_runtime import (
+                filter_grid_signals_under_waterfall,
+                inject_waterfall_close_signal,
+            )
+
+            params = script_ctx._params if isinstance(script_ctx._params, dict) else {}
+            pos = script_ctx.position
+            has_long = False
+            has_short = False
+            try:
+                if int(pos) > 0:
+                    has_long = True
+                elif int(pos) < 0:
+                    has_short = True
+            except Exception:
+                side = str((pos.get("side") if isinstance(pos, dict) else getattr(pos, "side", "")) or "").lower()
+                has_long = side == "long" and float((pos.get("size") if isinstance(pos, dict) else getattr(pos, "size", 0)) or 0) > 0
+                has_short = side == "short" and float((pos.get("size") if isinstance(pos, dict) else getattr(pos, "size", 0)) or 0) > 0
+
+            out = filter_grid_signals_under_waterfall(list(signals or []), params)
+            return inject_waterfall_close_signal(
+                out,
+                params,
+                has_long=has_long,
+                has_short=has_short,
+                price=float(price or 0),
+                timestamp=int(timestamp or 0),
+            )
+        except Exception as e:
+            logger.warning(f"Bot market-guard signal post-process failed: {e}")
+            return signals
 
     def _script_orders_to_execution_signals(
         self,
@@ -775,6 +897,13 @@ class TradingExecutor:
             volume=float(row.get('volume') or 0),
             timestamp=row.get('time'),
         )
+        self._prepare_grid_bot_before_bar(
+            ctx, trading_config,
+            price=float(bar.close or 0),
+            high=float(bar.high or bar.close or 0),
+            low=float(bar.low or bar.close or 0),
+            is_closed_bar=True,
+        )
         try:
             on_bar(ctx, bar)
         except Exception as e:
@@ -783,9 +912,86 @@ class TradingExecutor:
             return [], last_closed_ts
         bar_close = float(row.get('close') or 0)
         pending = self._script_orders_to_execution_signals(ctx, trade_direction, bar_close, closed_ts, trading_config)
+        try:
+            ts_i = int(closed_ts.timestamp())
+        except Exception:
+            ts_i = int(time.time())
+        pending = self._post_process_grid_bot_signals(
+            pending, ctx, trading_config, price=bar_close, timestamp=ts_i,
+        )
         self._persist_script_runtime_state(strategy_id, closed_ts, ctx._params)
         logger.info(f"Strategy {strategy_id} script closed bar {closed_ts} -> {len(pending)} signal(s)")
         return pending, closed_ts
+
+    def _script_evaluate_in_progress_bar(
+        self,
+        df: pd.DataFrame,
+        ctx: StrategyScriptContext,
+        on_bar,
+        trade_direction: str,
+        strategy_id: int,
+        symbol: str,
+        trading_config: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Evaluate the forming (last) bar — used when strict_mode is off."""
+        if df is None or len(df) < 1:
+            return []
+        df_exec = self._df_to_script_exec_df(df)
+        ctx._bars_df = df_exec
+        pos = len(df) - 1
+        ctx.current_index = int(pos)
+        row = df_exec.iloc[pos]
+        _init_cap = (trading_config or {}).get("initial_capital")
+        _bar_close_for_hydrate = None
+        try:
+            _bar_close_for_hydrate = float(row.get("close") or 0)
+        except Exception:
+            _bar_close_for_hydrate = None
+        self._hydrate_script_ctx_from_positions(
+            ctx, strategy_id, symbol,
+            initial_capital=_init_cap,
+            current_price=_bar_close_for_hydrate,
+        )
+        ctx._orders = []
+        bar_ts = df.index[pos]
+        bar = ScriptBar(
+            open=float(row.get("open") or 0),
+            high=float(row.get("high") or 0),
+            low=float(row.get("low") or 0),
+            close=float(row.get("close") or 0),
+            volume=float(row.get("volume") or 0),
+            timestamp=row.get("time"),
+        )
+        self._prepare_grid_bot_before_bar(
+            ctx, trading_config,
+            price=float(bar.close or 0),
+            high=float(bar.high or bar.close or 0),
+            low=float(bar.low or bar.close or 0),
+            is_closed_bar=False,
+        )
+        try:
+            on_bar(ctx, bar)
+        except Exception as e:
+            logger.error(f"Strategy {strategy_id} script in-progress on_bar error: {e}")
+            logger.error(traceback.format_exc())
+            return []
+        bar_close = float(row.get("close") or 0)
+        pending = self._script_orders_to_execution_signals(
+            ctx, trade_direction, bar_close, bar_ts, trading_config,
+        )
+        try:
+            ts_i = int(bar_ts.timestamp())
+        except Exception:
+            ts_i = int(time.time())
+        pending = self._post_process_grid_bot_signals(
+            pending, ctx, trading_config, price=bar_close, timestamp=ts_i,
+        )
+        self._persist_script_runtime_state(strategy_id, None, ctx._params)
+        if pending:
+            logger.info(
+                f"Strategy {strategy_id} script in-progress bar {bar_ts} -> {len(pending)} signal(s)"
+            )
+        return pending
     
     def _run_strategy_loop(self, strategy_id: int):
         """
@@ -837,11 +1043,24 @@ class TradingExecutor:
             # IBKR/MT5 disabled in SaaS/cloud installs.
             if "disabled ibkr/mt5" in m or "已关闭 ibkr / mt5" in msg:
                 return True
+            # Broker gateway not reachable (Docker 127.0.0.1, TWS down, etc.)
+            if any(
+                t in m
+                for t in (
+                    "connection refused",
+                    "connect call failed",
+                    "errno 111",
+                    "failed to connect to ibkr",
+                    "make sure api port on tws",
+                )
+            ):
+                return True
             # Common auth/permission failures (API key expired/invalid).
             fatal_tokens = [
                 "invalid api", "api key", "apikey", "secret", "signature",
                 "authentication", "unauthorized", "forbidden", "permission",
                 "invalid_key", "invalid key",
+                '"code":-2015', "-2015", "50111", "40018",
             ]
             if any(t in m for t in fatal_tokens):
                 return True
@@ -870,15 +1089,20 @@ class TradingExecutor:
 
             # 初始化策略状态
             trading_config = strategy['trading_config']
+            normalize_trading_execution_modes(trading_config)
+            logger.info(
+                f"Strategy {strategy_id} execution modes: strict_mode={trading_config.get('strict_mode')}, "
+                f"signal_mode={trading_config.get('signal_mode')}, "
+                f"entry_trigger_mode={trading_config.get('entry_trigger_mode')}, "
+                f"exit_signal_mode={trading_config.get('exit_signal_mode')}"
+            )
             # `strict_mode` opts the strategy into "backtest-equivalent" semantics:
             # closed-bar signals only (drop in-progress bar) and a confirmed exit
             # signal (no aggressive intra-bar close). This reduces the drift
             # between backtest and live but typically delays entries/exits by
             # one full bar. Both knobs default to existing behaviour when
             # strict_mode is unset.
-            if trading_config and bool(trading_config.get('strict_mode', False)):
-                trading_config.setdefault('exit_signal_mode', 'confirmed')
-            indicator_config = strategy.get('indicator_config') or {}
+            strict_mode = bool(trading_config.get('strict_mode', False))
             ai_model_config = strategy.get('ai_model_config') or {}
             execution_mode = (strategy.get('execution_mode') or 'signal').strip().lower()
             if execution_mode not in ['signal', 'live']:
@@ -1017,6 +1241,16 @@ class TradingExecutor:
 
             # Best-effort: query the real fee tier from the exchange (cached per strategy)
             exchange_config = strategy.get('exchange_config') or {}
+            kline_exchange_id, kline_market_type = self._live_crypto_kline_params(
+                market_category=market_category,
+                market_type=market_type,
+                execution_mode=execution_mode,
+                exchange_config=exchange_config,
+                trading_config=trading_config,
+            )
+            self._log_crypto_kline_source(
+                strategy_id, market_category, execution_mode, kline_exchange_id, kline_market_type
+            )
             if exchange_config and exchange_config.get('api_key') or exchange_config.get('apiKey'):
                 try:
                     self._query_exchange_fee_rate(strategy_id, exchange_config, symbol, market_type)
@@ -1028,7 +1262,10 @@ class TradingExecutor:
             # ============================================
             # logger.info(f"策略 {strategy_id} 初始化：获取历史K线数据...")
             history_limit = int(os.getenv('K_LINE_HISTORY_GET_NUMBER', 500))
-            klines = self._fetch_latest_kline(symbol, timeframe, limit=history_limit, market_category=market_category)
+            klines = self._fetch_latest_kline(
+                symbol, timeframe, limit=history_limit, market_category=market_category,
+                exchange_id=kline_exchange_id, market_type=kline_market_type,
+            )
             if not klines or len(klines) < 2:
                 logger.error(f"Strategy {strategy_id} failed to fetch K-lines")
                 return
@@ -1099,6 +1336,22 @@ class TradingExecutor:
                     df, script_ctx, on_bar_script, trade_direction,
                     last_script_closed_ts, strategy_id, symbol, trading_config,
                 )
+                if not strict_mode and len(df) > 0:
+                    try:
+                        init_price = float(df['close'].iloc[-1])
+                        rt_df = self._update_dataframe_with_current_price(
+                            df.copy(), init_price, timeframe,
+                        )
+                        ip_sig = self._script_evaluate_in_progress_bar(
+                            rt_df, script_ctx, on_bar_script, trade_direction,
+                            strategy_id, symbol, trading_config,
+                        )
+                        if ip_sig:
+                            pending_signals = ip_sig
+                    except Exception as e:
+                        logger.warning(
+                            f"Strategy {strategy_id} script init in-progress eval failed: {e}"
+                        )
                 try:
                     last_kline_time = int(df.index[-1].timestamp())
                 except Exception:
@@ -1173,7 +1426,10 @@ class TradingExecutor:
                     # ============================================
                     # 1. Fetch current price once per tick
                     # ============================================
-                    current_price = self._fetch_current_price(exchange, symbol, market_type=market_type, market_category=market_category)
+                    current_price = self._fetch_current_price(
+                        exchange, symbol, market_type=market_type, market_category=market_category,
+                        exchange_id=kline_exchange_id, kline_market_type=kline_market_type,
+                    )
                     if current_price is None:
                         logger.warning(f"Strategy {strategy_id} failed to fetch current price for {market_category}:{symbol}")
                         consecutive_errors += 1
@@ -1192,7 +1448,10 @@ class TradingExecutor:
                     # 2. 检查是否需要更新K线（每个K线周期更新一次，从API拉取）
                     # ============================================
                     if current_time - last_kline_update_time >= kline_update_interval:
-                        klines = self._fetch_latest_kline(symbol, timeframe, limit=history_limit, market_category=market_category)
+                        klines = self._fetch_latest_kline(
+                            symbol, timeframe, limit=history_limit, market_category=market_category,
+                            exchange_id=kline_exchange_id, market_type=kline_market_type,
+                        )
                         if klines and len(klines) >= 2:
                             df = self._klines_to_dataframe(klines)
                             if len(df) > 0:
@@ -1202,6 +1461,21 @@ class TradingExecutor:
                                         last_script_closed_ts, strategy_id, symbol, trading_config,
                                     )
                                     pending_signals = new_sig
+                                    if not strict_mode:
+                                        try:
+                                            rt_df = self._update_dataframe_with_current_price(
+                                                df.copy(), current_price, timeframe,
+                                            )
+                                            ip_sig = self._script_evaluate_in_progress_bar(
+                                                rt_df, script_ctx, on_bar_script, trade_direction,
+                                                strategy_id, symbol, trading_config,
+                                            )
+                                            if ip_sig:
+                                                pending_signals = ip_sig
+                                        except Exception as e:
+                                            logger.warning(
+                                                f"Strategy {strategy_id} script kline in-progress eval failed: {e}"
+                                            )
                                     try:
                                         last_kline_time = int(df.index[-1].timestamp())
                                     except Exception:
@@ -1269,11 +1543,26 @@ class TradingExecutor:
                                     volume=0,
                                     timestamp=int(time.time()),
                                 )
+                                self._prepare_grid_bot_before_bar(
+                                    script_ctx, trading_config,
+                                    price=float(current_price),
+                                    high=float(current_price),
+                                    low=float(current_price),
+                                    is_closed_bar=False,
+                                )
                                 on_bar_script(script_ctx, tick_bar)
                                 if script_ctx._orders:
                                     tick_ts = pd.Timestamp.now(tz='UTC')
                                     new_sig = self._script_orders_to_execution_signals(
                                         script_ctx, trade_direction, float(current_price), tick_ts, trading_config,
+                                    )
+                                    try:
+                                        tick_ts_i = int(tick_ts.timestamp())
+                                    except Exception:
+                                        tick_ts_i = int(time.time())
+                                    new_sig = self._post_process_grid_bot_signals(
+                                        new_sig, script_ctx, trading_config,
+                                        price=float(current_price), timestamp=tick_ts_i,
                                     )
                                     if new_sig:
                                         pending_signals = new_sig
@@ -1285,6 +1574,32 @@ class TradingExecutor:
                                     self._persist_script_runtime_state(strategy_id, None, script_ctx._params)
                             except Exception as e:
                                 logger.warning(f"Strategy {strategy_id} bot tick on_bar error: {e}")
+
+                        # 3a2. Non-bot scripts: evaluate forming bar when strict mode is off
+                        elif (
+                            is_script
+                            and not is_bot_mode
+                            and not strict_mode
+                            and on_bar_script
+                            and script_ctx is not None
+                            and 'df' in locals()
+                            and df is not None
+                            and len(df) > 0
+                        ):
+                            try:
+                                rt_df = self._update_dataframe_with_current_price(
+                                    df.copy(), current_price, timeframe,
+                                )
+                                new_sig = self._script_evaluate_in_progress_bar(
+                                    rt_df, script_ctx, on_bar_script, trade_direction,
+                                    strategy_id, symbol, trading_config,
+                                )
+                                if new_sig:
+                                    pending_signals = new_sig
+                            except Exception as e:
+                                logger.warning(
+                                    f"Strategy {strategy_id} script in-progress recompute failed: {e}"
+                                )
 
                         # 3b. Indicator strategies: real-time recompute
                         elif (not is_script) and 'df' in locals() and df is not None and len(df) > 0:
@@ -1300,7 +1615,6 @@ class TradingExecutor:
                                 # users opt into strict mode we additionally
                                 # drop the in-progress bar so the indicator sees
                                 # the same bar sequence the backtester saw.
-                                strict_mode = bool(trading_config.get('strict_mode', False))
                                 if strict_mode:
                                     try:
                                         from app.data_sources.base import TIMEFRAME_SECONDS as _TFS
@@ -1529,6 +1843,7 @@ class TradingExecutor:
                                 initial_capital=initial_capital,
                                 market_type=market_type,
                                 market_category=market_category,
+                                price_exchange_id=kline_exchange_id,
                                 execution_mode=execution_mode,
                                 notification_config=notification_config,
                                 trading_config=trading_config,
@@ -1793,7 +2108,76 @@ class TradingExecutor:
                 self._exchange_fee_cache[strategy_id] = None
             return None
 
-    def _fetch_latest_kline(self, symbol: str, timeframe: str, limit: int = 500, market_category: str = 'Crypto') -> List[Dict[str, Any]]:
+    @staticmethod
+    def _live_crypto_kline_params(
+        *,
+        market_category: str,
+        market_type: str,
+        execution_mode: str,
+        exchange_config: Optional[Dict[str, Any]],
+        trading_config: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """加密货币策略（signal/live）：有交易所则按绑定所拉 K 线；否则走 Settings 全局数据源。"""
+        if (market_category or "").strip() != "Crypto":
+            return None, None
+        mode = (execution_mode or "").strip().lower()
+        if mode not in ("live", "signal"):
+            return None, None
+        from app.data_sources.crypto import resolve_crypto_venue
+
+        ex, mt = resolve_crypto_venue(
+            exchange_config=exchange_config,
+            trading_config=trading_config,
+            market_type=market_type,
+        )
+        return ex, mt
+
+    @staticmethod
+    def _log_crypto_kline_source(
+        strategy_id: int,
+        market_category: str,
+        execution_mode: str,
+        kline_exchange_id: Optional[str],
+        kline_market_type: Optional[str],
+    ) -> None:
+        if (market_category or "").strip() != "Crypto":
+            return
+        mode = (execution_mode or "").strip().lower()
+        if mode not in ("live", "signal"):
+            return
+        if kline_exchange_id:
+            logger.info(
+                f"Strategy {strategy_id} crypto K-line ({mode}): "
+                f"{kline_exchange_id}/{kline_market_type}"
+            )
+            return
+        try:
+            from app.config.data_sources import CCXTConfig
+
+            default_ex = (CCXTConfig.DEFAULT_EXCHANGE or "binance").strip().lower()
+        except Exception:
+            default_ex = "binance"
+        if mode == "signal":
+            logger.info(
+                f"Strategy {strategy_id} signal mode: no exchange selected; "
+                f"K-lines use Settings default data source ({default_ex})"
+            )
+        else:
+            logger.warning(
+                f"Strategy {strategy_id} live mode: missing exchange_id; "
+                f"K-lines fall back to Settings default ({default_ex}), "
+                "may differ from execution venue — bind an exchange for live trading"
+            )
+
+    def _fetch_latest_kline(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 500,
+        market_category: str = "Crypto",
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """获取最新K线数据（优先从缓存获取）
         
         Args:
@@ -1801,6 +2185,8 @@ class TradingExecutor:
             timeframe: 时间周期
             limit: 数据条数
             market_category: 市场类型 (Crypto, USStock, Forex, Futures)
+            exchange_id: 实盘加密货币 — 策略绑定交易所
+            market_type: 实盘加密货币 — spot 或 swap
         """
         try:
             # 使用 KlineService 获取K线数据（自动处理缓存）
@@ -1809,13 +2195,23 @@ class TradingExecutor:
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=limit,
-                before_time=int(time.time())
+                before_time=int(time.time()),
+                exchange_id=exchange_id,
+                market_type=market_type,
             )
         except Exception as e:
             logger.error(f"Failed to fetch K-lines for {market_category}:{symbol}: {str(e)}")
             return []
     
-    def _fetch_current_price(self, exchange: Any, symbol: str, market_type: str = None, market_category: str = 'Crypto') -> Optional[float]:
+    def _fetch_current_price(
+        self,
+        exchange: Any,
+        symbol: str,
+        market_type: str = None,
+        market_category: str = "Crypto",
+        exchange_id: Optional[str] = None,
+        kline_market_type: Optional[str] = None,
+    ) -> Optional[float]:
         """获取当前价格 (根据 market_category 选择正确的数据源)
         
         Args:
@@ -1823,9 +2219,13 @@ class TradingExecutor:
             symbol: 交易对/代码
             market_type: 交易类型 (swap/spot)
             market_category: 市场类型 (Crypto, USStock, Forex, Futures)
+            exchange_id: 实盘加密货币 — 策略绑定交易所
+            kline_market_type: 实盘加密货币 — spot 或 swap（与 K 线一致）
         """
+        ex_key = (exchange_id or "").strip().lower()
+        mt_key = (kline_market_type or market_type or "").strip().lower()
         # Local in-memory cache first
-        cache_key = f"{market_category}:{(symbol or '').strip().upper()}"
+        cache_key = f"{market_category}:{ex_key}:{mt_key}:{(symbol or '').strip().upper()}"
         if cache_key and self._price_cache_ttl_sec > 0:
             now = time.time()
             try:
@@ -1843,7 +2243,9 @@ class TradingExecutor:
         try:
             # 根据 market_category 选择正确的数据源
             # 支持: Crypto, USStock, Forex, Futures
-            ticker = DataSourceFactory.get_ticker(market_category, symbol)
+            ticker = DataSourceFactory.get_ticker(
+                market_category, symbol, exchange_id=exchange_id, market_type=kline_market_type or market_type
+            )
             if ticker:
                 price = float(ticker.get('last') or ticker.get('close') or 0)
                 if price > 0:
@@ -2651,6 +3053,7 @@ class TradingExecutor:
         trading_config: Optional[Dict[str, Any]] = None,
         ai_model_config: Optional[Dict[str, Any]] = None,
         signal_ts: int = 0,
+        price_exchange_id: Optional[str] = None,
     ):
         """执行具体的交易信号"""
         try:
@@ -2763,13 +3166,17 @@ class TradingExecutor:
                      # Bot scripts pass amount as absolute USDT notional, not ratio.
                      usdt_notional = float(position_size)
                      if market_type == 'spot':
+                         from app.services.live_trading.spot_sizing import scale_spot_open_notional
+                         usdt_notional = scale_spot_open_notional(usdt_notional)
                          amount = usdt_notional / current_price
                      else:
                          amount = (usdt_notional * leverage) / current_price
                  else:
                      position_ratio = self._to_ratio(position_size, default=0.05)
                      if market_type == 'spot':
-                         amount = available_capital * position_ratio / current_price
+                         from app.services.live_trading.spot_sizing import scale_spot_open_notional
+                         quote_stake = scale_spot_open_notional(available_capital * position_ratio)
+                         amount = quote_stake / current_price
                      else:
                          amount = (available_capital * position_ratio * leverage) / current_price
 
@@ -2830,6 +3237,7 @@ class TradingExecutor:
                 ref_price=float(current_price or 0.0),
                 market_type=market_type,
                 market_category=market_category,
+                price_exchange_id=price_exchange_id,
                 leverage=leverage,
                 execution_mode=execution_mode,
                 notification_config=notification_config,
@@ -3184,6 +3592,7 @@ class TradingExecutor:
         execution_mode: str = 'signal',
         notification_config: Optional[Dict[str, Any]] = None,
         signal_ts: int = 0,
+        price_exchange_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         将信号转为 pending_orders 队列记录（本方法不直连交易所、不使用 ccxt）。
@@ -3219,7 +3628,14 @@ class TradingExecutor:
 
             # Reference price at enqueue time: use current tick price if provided to avoid extra fetch.
             if ref_price is None:
-                ref_price = self._fetch_current_price(None, symbol, market_category=market_category) or 0.0
+                ref_price = self._fetch_current_price(
+                    None,
+                    symbol,
+                    market_type=market_type,
+                    market_category=market_category,
+                    exchange_id=price_exchange_id,
+                    kline_market_type=market_type,
+                ) or 0.0
             ref_price = float(ref_price or 0.0)
 
             extra_payload = {
@@ -3755,7 +4171,9 @@ class TradingExecutor:
         symbols: List[str],
         trading_config: Dict[str, Any],
         market_category: str,
-        timeframe: str
+        timeframe: str,
+        exchange_id: Optional[str] = None,
+        market_type: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行截面策略指标，返回所有标的的评分和排序
@@ -3765,7 +4183,10 @@ class TradingExecutor:
             all_data = {}
             for symbol in symbols:
                 try:
-                    klines = self._fetch_latest_kline(symbol, timeframe, limit=200, market_category=market_category)
+                    klines = self._fetch_latest_kline(
+                        symbol, timeframe, limit=200, market_category=market_category,
+                        exchange_id=exchange_id, market_type=market_type,
+                    )
                     if klines and len(klines) >= 2:
                         df = self._klines_to_dataframe(klines)
                         if len(df) > 0:
@@ -3920,6 +4341,18 @@ class TradingExecutor:
         截面策略执行循环
         """
         logger.info(f"Starting cross-sectional strategy loop for strategy {strategy_id}")
+
+        exchange_config = strategy.get('exchange_config') or {}
+        kline_exchange_id, kline_market_type = self._live_crypto_kline_params(
+            market_category=market_category,
+            market_type=market_type,
+            execution_mode=execution_mode,
+            exchange_config=exchange_config,
+            trading_config=trading_config,
+        )
+        self._log_crypto_kline_source(
+            strategy_id, market_category, execution_mode, kline_exchange_id, kline_market_type
+        )
         
         symbol_list = trading_config.get('symbol_list', [])
         if not symbol_list:
@@ -3958,7 +4391,8 @@ class TradingExecutor:
                 
                 # 执行截面指标
                 result = self._execute_cross_sectional_indicator(
-                    indicator_code, symbol_list, trading_config, market_category, timeframe
+                    indicator_code, symbol_list, trading_config, market_category, timeframe,
+                    exchange_id=kline_exchange_id, market_type=kline_market_type,
                 )
                 
                 if not result:

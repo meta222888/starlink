@@ -59,4 +59,4 @@
 | SELL 几何 | 空单位：`take_profit < current < stop_loss` |
 | 周期预判 | 模板是否包含 `trend_outlook` 或 `trend_outlook_summary` |
 
-更新私有前端仓库后，通过 CI 或手动打包替换本仓库的 `frontend/dist/`（参见 `update-frontend.yml`）。
+在私有前端仓库（QuantDinger-Vue）上修改后，打 `v*` tag 即触发 `release-frontend.yml` 自动发布到 GHCR；本仓 `docker compose pull frontend && up -d frontend` 即生效。

@@ -100,7 +100,9 @@ If you plan a large change, please open a discussion first.
 This repository contains:
 
 - `backend_api_python/`: Flask backend + strategy runtime
-- `frontend/dist/`: pre-built web UI assets (Vue source is maintained in a separate private repo)
+- `docker-compose.yml` / `docker-compose.ghcr.yml`: deployment stacks
+
+The web UI source lives in the separate private **QuantDinger-Vue** repo, which publishes `ghcr.io/brokermr810/quantdinger-frontend` to GHCR on every `v*` tag — both Compose files pull that image directly.
 
 ### Backend (Python)
 
@@ -113,7 +115,9 @@ python run.py
 
 ### Frontend
 
-To update the SPA, build in the private Vue repository and sync `dist/` into `frontend/dist/` (see `DEVELOPMENT.md`). Pull requests that only refresh static assets should describe what changed in the private UI repo when possible.
+The SPA lives in the private **QuantDinger-Vue** repo. Tagging a release there (`git tag vX.Y.Z && git push --tags`) triggers `.github/workflows/release-frontend.yml`, which builds a multi-arch image and pushes it to `ghcr.io/brokermr810/quantdinger-frontend`. No frontend artefacts are committed here — pin the consumed tag via `IMAGE_TAG` (or `FRONTEND_TAG` for a per-side override) in a root-level `.env`.
+
+For local iteration without publishing, clone the Vue repo into `./QuantDinger-Vue/` (gitignored) and run `docker compose -f docker-compose.yml -f docker-compose.build.yml up --build` — see **DEVELOPMENT.md → Building frontend from local source**.
 
 ---
 
