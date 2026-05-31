@@ -1113,14 +1113,8 @@ def get_balance():
         if not credential_id:
             return jsonify({"code": 0, "msg": "Missing credential_id"}), 400
 
-        exchange_config = _build_exchange_config(credential_id, user_id, {"market_type": market_type})
-        exchange_id = (exchange_config.get("exchange_id") or "").strip().lower()
-        logger.info(
-            "get_balance begin credential_id=%s exchange_id=%s market_type=%s",
-            credential_id,
-            exchange_id,
-            market_type,
-        )
+        base_cfg = _build_exchange_config(credential_id, user_id, {})
+        exchange_id = (base_cfg.get("exchange_id") or "").strip().lower()
         qt_rej = _reject_quick_trade_if_desktop_broker(exchange_id)
         if qt_rej is not None:
             return qt_rej
@@ -1141,24 +1135,43 @@ def get_balance():
                 if mt == "spot":
                     spot_bal = parsed
                 else:
-                    raw = client.get_accounts()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif hasattr(client, "get_wallet_balance"):
-                raw = client.get_wallet_balance()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            elif (exchange_id or "").lower() == "bitget" and market_type == "spot" and hasattr(client, "get_assets"):
-                raw = client.get_assets()
-                balance_data = _parse_balance(raw, exchange_id, market_type)
-            logger.info(
-                "Balance for %s/%s: available=%.4f total=%.4f currency=%s (raw keys=%s)",
-                exchange_id, market_type,
-                balance_data.get("available", 0), balance_data.get("total", 0),
-                balance_data.get("currency", "USDT"),
-                list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
-            )
-        except Exception as be:
-            logger.warning(f"Balance fetch failed: {be}")
-            balance_data["error"] = str(be)
+                    swap_bal = parsed
+                logger.info(
+                    "Balance for %s/%s: available=%.4f total=%.4f",
+                    exchange_id,
+                    mt,
+                    float(parsed.get("available") or 0),
+                    float(parsed.get("total") or 0),
+                )
+            except Exception as be:
+                logger.warning("Balance leg failed (%s/%s): %s", exchange_id, mt, be)
+                leg = _empty_balance_dict()
+                leg["error"] = str(be)
+                if mt == "spot":
+                    spot_bal = leg
+                else:
+                    swap_bal = leg
+
+        active = spot_bal if market_type == "spot" else swap_bal
+        balance_data = {
+            "available": float(active.get("available") or 0),
+            "total": float(active.get("total") or 0),
+            "currency": str(active.get("currency") or "USDT"),
+            "market_type": market_type,
+            "swap": swap_bal,
+            "spot": spot_bal,
+        }
+        err_meta = _merge_balance_leg_errors(swap_bal, spot_bal, exchange_id=exchange_id)
+        if not err_meta and active.get("error"):
+            err_meta = _exchange_error_user_message(exchange_id=exchange_id, err=str(active.get("error")))
+            if err_meta.get("message"):
+                balance_data["error"] = err_meta["message"]
+            if err_meta.get("hint_key"):
+                balance_data["error_hint_key"] = err_meta["hint_key"]
+            if err_meta.get("request_ip"):
+                balance_data["request_ip"] = err_meta["request_ip"]
+        elif err_meta:
+            balance_data.update(err_meta)
 
         return jsonify({"code": 1, "msg": "success", "data": balance_data})
     except Exception as e:
