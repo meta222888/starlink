@@ -47,6 +47,7 @@ _CN_FINANCIAL_DOMAINS = ",".join([
     ".hexun.com",
     ".cninfo.com.cn",
     ".gtimg.cn",
+    ".bengxiong.com",
     ".qq.com",
     ".tencent.com",
     ".mairui.club",

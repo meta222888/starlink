@@ -2,14 +2,15 @@
 Tencent market data helpers (no API key).
 
 Provides:
-- Quote: https://qt.gtimg.cn/q=sh600519 / sz000001 / hk00700
-- Kline: https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=CODE,PERIOD,,,COUNT,ADJ
+- Quote: {TENCENT_QUOTE_BASE_URL}/q=sh600519 / sz000001 / hk00700  (default qt.gtimg.cn)
+- Kline: {TENCENT_KLINE_BASE_URL}/appstock/app/fqkline/get  (default web.ifzq.gtimg.cn)
 
 This is used as a stable alternative when Yahoo/yfinance gets rate-limited.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +20,29 @@ from app.data_sources.rate_limiter import get_request_headers, retry_with_backof
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Override when qt.gtimg.cn is unreachable (e.g. overseas Docker). Example mirror:
+#   TENCENT_QUOTE_BASE_URL=https://qt.bengxiong.com
+# Kline uses a different host; set TENCENT_KLINE_BASE_URL if you mirror that too.
+_DEFAULT_QUOTE_BASE = "https://qt.gtimg.cn"
+_DEFAULT_KLINE_BASE = "https://web.ifzq.gtimg.cn"
+
+
+def _base_url(env_key: str, default: str) -> str:
+    raw = (os.getenv(env_key) or default).strip()
+    if not raw:
+        return default.rstrip("/")
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    return raw.rstrip("/")
+
+
+def tencent_quote_base_url() -> str:
+    return _base_url("TENCENT_QUOTE_BASE_URL", _DEFAULT_QUOTE_BASE)
+
+
+def tencent_kline_base_url() -> str:
+    return _base_url("TENCENT_KLINE_BASE_URL", _DEFAULT_KLINE_BASE)
 
 
 def normalize_cn_code(symbol: str) -> str:
@@ -81,8 +105,9 @@ def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
 
     limiter = get_tencent_limiter()
     limiter.wait()
-    url = f"https://qt.gtimg.cn/q={c}"
-    resp = requests.get(url, headers=get_request_headers(referer="https://qt.gtimg.cn/"), timeout=timeout)
+    base = tencent_quote_base_url()
+    url = f"{base}/q={c}"
+    resp = requests.get(url, headers=get_request_headers(referer=f"{base}/"), timeout=timeout)
     # Tencent quote is often GBK encoded
     try:
         resp.encoding = "gbk"
@@ -207,7 +232,8 @@ def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", time
     limiter = get_tencent_limiter()
     limiter.wait()
 
-    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    base = tencent_kline_base_url()
+    url = f"{base}/appstock/app/fqkline/get"
     params = {"param": f"{c},{period},,,{int(count)},{adj}"}
     resp = requests.get(url, headers=get_request_headers(referer="https://gu.qq.com/"), params=params, timeout=timeout)
     data = resp.json() if resp.text else {}
