@@ -267,6 +267,7 @@ def _touch_token_last_used(token_id: int) -> None:
 # ─────────────────────────── audit ───────────────────────────
 
 _REDACT_KEYS = {"password", "secret", "token", "apikey", "api_key", "authorization"}
+_AUDIT_JSON_MAX_BYTES = 8000
 
 
 def _redact(obj: Any, depth: int = 0) -> Any:
@@ -287,6 +288,63 @@ def _redact(obj: Any, depth: int = 0) -> Any:
             return obj[:500] + "..."
         return obj
     return str(type(obj).__name__)
+
+
+def _audit_size_hint(value: Any) -> Any:
+    """Compact shape metadata for oversized audit payloads."""
+    if isinstance(value, list):
+        return {"_kind": "list", "len": len(value)}
+    if isinstance(value, dict):
+        return {
+            "_kind": "dict",
+            "len": len(value),
+            "keys": list(value.keys())[:30],
+        }
+    if isinstance(value, str) and len(value) > 200:
+        return value[:200] + "..."
+    return value
+
+
+def _compact_audit_value(obj: Any) -> Any:
+    """Replace large response bodies with a JSON-safe summary."""
+    if isinstance(obj, dict) and isinstance(obj.get("data"), dict):
+        return {
+            "code": obj.get("code"),
+            "message": obj.get("message"),
+            "retriable": obj.get("retriable"),
+            "details": obj.get("details"),
+            "truncated": True,
+            "data_summary": {
+                key: _audit_size_hint(val)
+                for key, val in obj["data"].items()
+            },
+        }
+    if isinstance(obj, dict) and isinstance(obj.get("data"), list):
+        return {
+            "code": obj.get("code"),
+            "message": obj.get("message"),
+            "retriable": obj.get("retriable"),
+            "details": obj.get("details"),
+            "truncated": True,
+            "data_summary": _audit_size_hint(obj["data"]),
+        }
+    return {"truncated": True, "preview": _audit_size_hint(obj)}
+
+
+def _json_for_audit(obj: Any, *, max_bytes: int = _AUDIT_JSON_MAX_BYTES) -> str | None:
+    """Serialize audit payloads as valid JSON within a byte budget.
+
+    Never slice ``json.dumps(...)`` — that produces invalid JSON for JSONB
+    columns (e.g. mid-key truncation on large ``ai-asset-snapshot`` bodies).
+    """
+    if obj is None:
+        return None
+    redacted = _redact(obj)
+    for candidate in (redacted, _compact_audit_value(redacted)):
+        text = json.dumps(candidate, default=str, ensure_ascii=False)
+        if len(text.encode("utf-8")) <= max_bytes:
+            return text
+    return json.dumps({"truncated": True, "reason": "payload_too_large"}, ensure_ascii=False)
 
 
 def _audit(scope_class: str, status_code: int, response_summary: Any, duration_ms: int) -> None:
@@ -319,8 +377,8 @@ def _audit(scope_class: str, status_code: int, response_summary: Any, duration_m
                     scope_class,
                     int(status_code),
                     request.headers.get("Idempotency-Key"),
-                    json.dumps(req_summary, default=str)[:8000],
-                    json.dumps(_redact(response_summary), default=str)[:8000] if response_summary is not None else None,
+                    _json_for_audit(req_summary),
+                    _json_for_audit(response_summary),
                     int(duration_ms),
                 ),
             )

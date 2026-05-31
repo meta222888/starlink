@@ -11,6 +11,7 @@ to validate the auth state machine.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -157,3 +158,55 @@ def test_token_generator_format():
     other_token, _, other_hash = agent_auth.generate_token()
     assert token != other_token
     assert token_hash != other_hash
+
+
+def test_json_for_audit_keeps_small_payloads():
+    payload = {"code": 0, "message": "ok", "data": {"count": 3}}
+    text = agent_auth._json_for_audit(payload)
+    assert text is not None
+    parsed = json.loads(text)
+    assert parsed["data"]["count"] == 3
+
+
+def test_json_for_audit_compacts_large_snapshot_without_invalid_json():
+    calendar = [
+        {
+            "id": i,
+            "name": f"event-{i}",
+            "name_en": f"event-{i}",
+            "country": "US",
+            "date": "2026-05-31",
+            "time": "08:30",
+            "importance": "high",
+            "actual": "198K",
+            "forecast": "180K",
+            "previous": "175K",
+            "impact_desc": "x" * 200,
+        }
+        for i in range(40)
+    ]
+    payload = {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "market_types": [{"value": "Crypto"}] * 7,
+            "hot_symbols": {"Crypto": [{"symbol": "BTC/USDT", "name": "Bitcoin"}] * 10},
+            "opportunities": [],
+            "market_sentiment": {"fear_greed": {"value": 50}},
+            "market_overview": {"crypto": [{"symbol": "BTC", "price": 0}] * 12},
+            "market_heatmap": {"crypto": [{"name": "BTC", "value": 0}] * 12},
+            "economic_calendar": calendar,
+        },
+    }
+    text = agent_auth._json_for_audit(payload)
+    assert text is not None
+    assert len(text.encode("utf-8")) <= agent_auth._AUDIT_JSON_MAX_BYTES
+    parsed = json.loads(text)
+    assert parsed["truncated"] is True
+    assert parsed["data_summary"]["economic_calendar"]["len"] == 40
+
+
+def test_json_for_audit_never_slices_mid_string():
+    payload = {"code": 0, "message": "ok", "data": {"blob": "x" * 20000}}
+    text = agent_auth._json_for_audit(payload)
+    json.loads(text)  # must not raise
