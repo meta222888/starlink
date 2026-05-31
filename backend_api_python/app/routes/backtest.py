@@ -162,7 +162,8 @@ def run_backtest():
         endDate: End date (YYYY-MM-DD)
         initialCapital: Initial capital (default 10000)
         commission: Commission rate (default 0.001)
-        enableMtf: Enable multi-timeframe backtest (default true, only for crypto)
+        enableMtf: Enable multi-timeframe backtest (deprecated; use strictMode)
+        strictMode: Strict mode (default true). Off uses aggressive same-bar / 1m path for crypto.
     """
     try:
         data = request.get_json()
@@ -176,13 +177,6 @@ def run_backtest():
         # Extract params - use current user's ID
         user_id = g.user_id
         indicator_code = data.get('indicatorCode', '')
-        is_safe_code, unsafe_reason = validate_code_safety(indicator_code or '')
-        if not is_safe_code:
-            return jsonify({
-                'code': 0,
-                'msg': f'Unsafe indicator code: {unsafe_reason}',
-                'data': None
-            }), 400
         indicator_id = data.get('indicatorId')
         symbol = (data.get('symbol') or '').strip()
         market = (data.get('market') or '').strip()
@@ -191,16 +185,25 @@ def run_backtest():
         timeframe = data.get('timeframe', '1D')
         start_date_str = data.get('startDate', '')
         end_date_str = data.get('endDate', '')
+        from app.services.backtest_execution import (
+            default_slippage_if_missing,
+            parse_strict_mode,
+            merge_strict_mode_into_strategy_config,
+        )
+
+        strict_mode = parse_strict_mode(
+            data.get('strictMode', data.get('strict_mode')),
+            default=True,
+        )
         initial_capital = float(data.get('initialCapital', 10000))
         commission = float(data.get('commission', 0.001))
-        slippage = float(data.get('slippage', 0.0))
+        slippage = default_slippage_if_missing(data.get('slippage'))
         leverage = int(data.get('leverage', 1))
         trade_direction = data.get('tradeDirection', 'long')  # long, short, both
-        strategy_config = data.get('strategyConfig') or {}
-        # 多时间框架回测开关（默认开启，仅加密货币市场有效）
-        enable_mtf = data.get('enableMtf', True)
-        if isinstance(enable_mtf, str):
-            enable_mtf = enable_mtf.lower() in ['true', '1', 'yes']
+        strategy_config = merge_strict_mode_into_strategy_config(
+            data.get('strategyConfig') or {},
+            strict_mode,
+        )
         # persist toggle: skip DB write when False for faster iteration
         persist = data.get('persist', True)
         if isinstance(persist, str):
@@ -229,6 +232,14 @@ def run_backtest():
                 'msg': 'Missing required parameters',
                 'data': None
             }), 400
+
+        is_safe_code, unsafe_reason = validate_code_safety(indicator_code or '')
+        if not is_safe_code:
+            return jsonify({
+                'code': 0,
+                'msg': f'Unsafe indicator code: {unsafe_reason}',
+                'data': None
+            }), 400
         
         # 转换日期
         # 开始日期：当天的 00:00:00
@@ -254,49 +265,30 @@ def run_backtest():
             f"[BacktestRequest] user={user_id} indicator={indicator_id} {market}:{symbol} "
             f"tf={timeframe} range=[{start_date_str} ~ {end_date_str}] ({days_diff}d) "
             f"capital={initial_capital} leverage={leverage} direction={trade_direction} "
-            f"mtf={enable_mtf}"
+            f"strict_mode={strict_mode}"
         )
 
-        # 执行回测（支持多时间框架高精度回测）
-        # 加密货币市场且启用MTF时，使用多时间框架回测
-        if enable_mtf and market.lower() in ['crypto', 'cryptocurrency']:
-            result = backtest_service.run_multi_timeframe(
-                indicator_code=indicator_code,
-                market=market,
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                commission=commission,
-                slippage=slippage,
-                leverage=leverage,
-                trade_direction=trade_direction,
-                strategy_config=strategy_config,
-                enable_mtf=True
-            )
-        else:
-            result = backtest_service.run(
-                indicator_code=indicator_code,
-                market=market,
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                commission=commission,
-                slippage=slippage,
-                leverage=leverage,
-                trade_direction=trade_direction,
-                strategy_config=strategy_config
-            )
-            # 添加标准回测的精度信息
-            result['precision_info'] = {
-                'enabled': False,
-                'timeframe': timeframe,
-                'precision': 'standard',
-                'message': '使用标准K线回测'
-            }
+        result = backtest_service.run_aligned(
+            strict_mode=strict_mode,
+            indicator_code=indicator_code,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            commission=commission,
+            slippage=slippage,
+            leverage=leverage,
+            trade_direction=trade_direction,
+            strategy_config=strategy_config,
+        )
+
+        ea = dict(result.get('executionAssumptions') or {})
+        ea['commission'] = round(float(commission), 6)
+        ea['slippage'] = round(float(slippage), 6)
+        ea['strictMode'] = bool(strict_mode)
+        result['executionAssumptions'] = ea
 
         run_id = None
         if persist:
@@ -315,7 +307,12 @@ def run_backtest():
                 leverage=leverage,
                 trade_direction=trade_direction,
                 strategy_config=strategy_config,
-                config_snapshot={'indicatorId': int(indicator_id) if indicator_id is not None else None},
+                config_snapshot={
+                    'indicatorId': int(indicator_id) if indicator_id is not None else None,
+                    'executionConfig': {
+                        'strictMode': bool(strict_mode),
+                    },
+                },
                 status='success',
                 error_message='',
                 result=result,
@@ -578,18 +575,18 @@ def _heuristic_ai_advice(runs: list[dict], lang: str) -> str:
     lines.append("\n" + h["params"])
     if stop_loss <= 0:
         if lang == "en-US":
-            lines.append("- Stop-loss: set stopLossPct (margin PnL basis). For crypto leverage, start with 2%~6% (then consider leverage conversion) and grid test.")
+            lines.append("- Stop-loss: set stopLossPct as 0–1 price move (e.g. 0.03 = 3% adverse price; not margin PnL, no ÷ leverage). Try 0.02–0.06 and grid test.")
         elif lang == "zh-TW":
-            lines.append("- 止損：建議設定 stopLossPct（按保證金口徑）。在加密+槓桿下，先從 2%~6%（再結合槓桿換算）做網格測試。")
+            lines.append("- 止損：stopLossPct 用 0–1 小數表示標的漲跌幅（如 0.03=3% 價格反向；非保證金口徑、不除槓桿）。可先試 0.02–0.06 做網格測試。")
         else:
-            lines.append("- 止损：建议设置 stopLossPct（按保证金口径）。在加密+杠杆下，先从 2%~6%（再结合杠杆换算）做网格测试。")
+            lines.append("- 止损：stopLossPct 用 0–1 小数表示标的涨跌幅（如 0.03=3% 价格反向；非保证金口径、不除杠杆）。可先试 0.02–0.06 做网格测试。")
     else:
         if lang == "en-US":
-            lines.append(f"- Stop-loss: current stopLossPct={stop_loss:.4f} (margin basis). Test ±30% around it and monitor drawdown/liquidations.")
+            lines.append(f"- Stop-loss: current stopLossPct={stop_loss:.4f} (underlying price move). Test ±30% around it and monitor drawdown/liquidations.")
         elif lang == "zh-TW":
-            lines.append(f"- 止損：目前 stopLossPct={stop_loss:.4f}（保證金口徑）。建議圍繞它做 ±30% 區間測試，並觀察回撤/爆倉次數變化。")
+            lines.append(f"- 止損：目前 stopLossPct={stop_loss:.4f}（標的漲跌幅）。建議圍繞它做 ±30% 區間測試，並觀察回撤/爆倉次數變化。")
         else:
-            lines.append(f"- 止损：当前 stopLossPct={stop_loss:.4f}（保证金口径）。建议围绕它做 ±30% 的区间测试，并观察回撤/爆仓次数变化。")
+            lines.append(f"- 止损：当前 stopLossPct={stop_loss:.4f}（标的涨跌幅）。建议围绕它做 ±30% 的区间测试，并观察回撤/爆仓次数变化。")
     if take_profit > 0 and (not trailing_enabled):
         if lang == "en-US":
             lines.append(f"- Take-profit: current takeProfitPct={take_profit:.4f}. Also test enabling trailing to reduce profit giveback.")
@@ -606,11 +603,11 @@ def _heuristic_ai_advice(runs: list[dict], lang: str) -> str:
             lines.append(f"- 移动止盈：已启用，pct={trailing_pct:.4f}, activationPct={trailing_act:.4f}。建议把 activationPct 设为略低于常见单笔盈利水平，并把 pct 做 0.5x~1.5x 测试。")
     else:
         if lang == "en-US":
-            lines.append("- Trailing: consider trailing.enabled=true; start with pct=1%~3% (margin basis) and test.")
+            lines.append("- Trailing: consider trailing.enabled=true; start with trailingStopPct 0.01–0.03 (1%–3% price retracement) and test.")
         elif lang == "zh-TW":
-            lines.append("- 移動止盈：建議開啟 trailing.enabled=true，並從 pct=1%~3%（保證金口徑換算後）開始測試。")
+            lines.append("- 移動止盈：建議開啟 trailing.enabled=true，trailingStopPct 可從 0.01–0.03（標的回撤 1%–3%）開始測試。")
         else:
-            lines.append("- 移动止盈：建议开启 trailing.enabled=true，并从 pct=1%~3%（保证金口径换算后）开始测试。")
+            lines.append("- 移动止盈：建议开启 trailing.enabled=true，trailingStopPct 可从 0.01–0.03（标的回撤 1%–3%）开始测试。")
     if lang == "en-US":
         lines.append(f"- Entry sizing: entryPct={entry_pct:.4f}. Test 0.2/0.3/0.5/0.8 to find a better return/drawdown sweet spot.")
     elif lang == "zh-TW":

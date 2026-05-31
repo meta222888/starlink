@@ -41,8 +41,8 @@ The Agent Gateway is mounted at **`/api/agent/v1`** by `app/routes/agent_v1/`.
 - Trading: `quick_trade.py` enforces paper-only by default; live execution
   requires both `paper_only=false` on the token AND env
   `AGENT_LIVE_TRADING_ENABLED=true`. Do not weaken this without explicit ask.
-- MCP: `mcp_server/` is a thin Python wrapper over R + B endpoints, with
-  three transports selected by `QUANTDINGER_MCP_TRANSPORT`: `stdio` (default,
+- MCP: `mcp_server/` is a thin Python wrapper over R + W + B endpoints (no
+  trading), with three transports selected by `QUANTDINGER_MCP_TRANSPORT`: `stdio` (default,
   desktop IDEs), `sse`, and `streamable-http` (cloud agents / remote IDEs;
   also bind `QUANTDINGER_MCP_HOST` / `QUANTDINGER_MCP_PORT`). Add new tools
   there only after exposing the underlying capability via REST.

@@ -418,6 +418,27 @@ def get_user_credits_log():
 
 # Self-service endpoints (accessible by any logged-in user)
 
+@user_bp.route('/login-logs', methods=['GET'])
+@login_required
+def get_login_logs():
+    """Paginated account login history (password / email code / OAuth)."""
+    try:
+        user_id = getattr(g, 'user_id', None)
+        if not user_id:
+            return jsonify({'code': 0, 'msg': 'Not authenticated', 'data': None}), 401
+
+        page = int(request.args.get('page') or 1)
+        page_size = int(request.args.get('page_size') or 20)
+
+        from app.services.login_notify import list_login_logs
+
+        data = list_login_logs(int(user_id), page=page, page_size=page_size)
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except Exception as e:
+        logger.error(f"get_login_logs failed: {e}")
+        return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
+
+
 @user_bp.route('/profile', methods=['GET'])
 @login_required
 def get_profile():

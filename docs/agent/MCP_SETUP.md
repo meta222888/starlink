@@ -55,7 +55,7 @@ and whether `AGENT_LIVE_TRADING_ENABLED=true` is ever flipped.
 
 1. Click **Issue Token** → name it (`cursor-mcp`, `claude-research`, …).
 2. Pick scopes — start with **R + B** (read + backtest); add **W** to let the
-   agent create/edit strategies.
+   agent save indicators and create/edit strategies.
 3. Copy the token **once** — the dialog shows the full string once; the
    server only keeps a SHA-256 hash.
 
@@ -132,17 +132,31 @@ older SSE transport. Put a reverse proxy in front for TLS and IP allowlisting.
 
 Restart the IDE, then ask things like:
 
+- *"Call `get_indicator_authoring_contract`, then write and validate a Keltner
+  breakout indicator."*
 - *"Pull the last 90 daily candles for BTC/USDT and tell me what the regime
   detector says."*
-- *"Backtest the 20/60 SMA crossover on ETH/USDT 4h between 2024-01-01 and
-  2024-06-30 and stream the result as it runs."*
+- *"Backtest the indicator with `strict_mode=true` on ETH/USDT 4h between
+  2024-01-01 and 2024-06-30; use `wait_for_job` for the result."*
 - *"Create a strategy named **eth-trend-bot**, use the indicator I just
-  designed, leave it in `stopped` state."*
+  saved, leave it in `stopped` state."*
 
-Long-running jobs (`/api/agent/v1/jobs/{id}/stream`) are exposed as SSE so the
-agent can react to partial results without polling. Every call shows up under
-**Agent Tokens → Audit log** with route, scope class, status code, and
-duration.
+### MCP tools vs REST
+
+The MCP server wraps **Read (R), Workspace write (W), and Backtest (B)** tools
+only. It does **not** expose trading (`quick-trade/*`), admin token APIs, or
+credential vault access — even if your token has those scopes. That boundary
+is intentional.
+
+Long-running jobs: prefer MCP `wait_for_job` or bounded `stream_job_until_done`
+(capped by `QUANTDINGER_MCP_JOB_STREAM_MAX_*` env vars). Raw Gateway SSE is
+still available at `GET /api/agent/v1/jobs/{id}/stream` for custom clients.
+
+`submit_ai_optimize` requires `confirm_llm_usage=true` in MCP to acknowledge
+LLM quota consumption.
+
+Every Gateway call shows up under **Agent Tokens → Audit log** with route,
+scope class, status code, and duration.
 
 ---
 

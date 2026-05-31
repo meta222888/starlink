@@ -108,6 +108,15 @@ def _get_user_agent() -> str:
     return request.headers.get('User-Agent', '')[:500]
 
 
+def _userinfo_must_change_initial_password(user_id: int) -> bool:
+    """Whether the UI should prompt the user to change their bootstrap password."""
+    try:
+        from app.services.user_service import get_user_service
+        return get_user_service().must_change_initial_password(int(user_id))
+    except Exception:
+        return False
+
+
 # =============================================================================
 # Security Config Endpoint
 # =============================================================================
@@ -249,8 +258,15 @@ def login():
         security.record_login_attempt(username, 'account', True, ip_address, user_agent)
         security.clear_login_attempts(ip_address, 'ip')
         security.clear_login_attempts(username, 'account')
-        security.log_security_event('login_success', user.get('id'), ip_address, user_agent)
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user.get('id') or user_id),
+            action='login_success',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'method': 'password'},
+        )
+
         # Build user info for frontend
         userinfo = {
             'id': user.get('id') or user.get('user_id', 1),
@@ -261,7 +277,8 @@ def login():
             'role': {
                 'id': user.get('role', 'admin'),
                 'permissions': _get_permissions(user.get('role', 'admin'))
-            }
+            },
+            'must_change_initial_password': _userinfo_must_change_initial_password(user_id),
         }
         
         return jsonify({
@@ -455,9 +472,15 @@ def login_with_code():
         except Exception as e:
             logger.error(f"Failed to update last_login_at for user_id={user.get('id')}: {e}")
         
-        # Log login
-        security.log_security_event('login_via_code', user['id'], ip_address, user_agent)
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user['id']),
+            action='login_via_code',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'method': 'email_code', 'is_new_user': bool(is_new_user)},
+        )
+
         return jsonify({
             'code': 1,
             'msg': 'Login successful' + (' (new account created)' if is_new_user else ''),
@@ -993,10 +1016,15 @@ def oauth_google_callback():
             token_version=token_version
         )
         
-        # Log OAuth login
-        security.log_security_event('oauth_login', user_result['id'], ip_address, user_agent,
-                                   {'provider': 'google'})
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user_result['id']),
+            action='oauth_login',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'provider': 'google', 'method': 'oauth'},
+        )
+
         # Redirect to frontend with token
         return redirect(_build_frontend_login_redirect(frontend_url, oauth_token=token))
         
@@ -1085,10 +1113,15 @@ def oauth_github_callback():
             token_version=token_version
         )
         
-        # Log OAuth login
-        security.log_security_event('oauth_login', user_result['id'], ip_address, user_agent,
-                                   {'provider': 'github'})
-        
+        from app.services.login_notify import notify_successful_login
+        notify_successful_login(
+            user_id=int(user_result['id']),
+            action='oauth_login',
+            ip_address=ip_address,
+            user_agent=user_agent,
+            extra_details={'provider': 'github', 'method': 'oauth'},
+        )
+
         # Redirect to frontend with token
         return redirect(_build_frontend_login_redirect(frontend_url, oauth_token=token))
         
@@ -1128,11 +1161,12 @@ def get_user_info():
                 logger.warning(f"Failed to get user from database: {e}")
         
         if user_data:
+            uid = user_data.get('id')
             return jsonify({
                 'code': 1,
                 'msg': 'Success',
                 'data': {
-                    'id': user_data.get('id'),
+                    'id': uid,
                     'username': user_data.get('username'),
                     'nickname': user_data.get('nickname', 'User'),
                     'email': user_data.get('email'),
@@ -1141,7 +1175,8 @@ def get_user_info():
                     'role': {
                         'id': user_data.get('role', 'user'),
                         'permissions': _get_permissions(user_data.get('role', 'user'))
-                    }
+                    },
+                    'must_change_initial_password': _userinfo_must_change_initial_password(uid),
                 }
             })
         

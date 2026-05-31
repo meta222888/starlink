@@ -42,6 +42,7 @@ def register(app) -> None:
     from . import portfolio  # noqa: F401
     from . import quick_trade  # noqa: F401
     from . import jobs as jobs_module  # noqa: F401
+    from . import indicators  # noqa: F401
     from . import admin  # noqa: F401
 
     app.register_blueprint(agent_v1_bp, url_prefix="/api/agent/v1")

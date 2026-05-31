@@ -104,7 +104,8 @@ curl -s -X POST http://localhost:8888/api/agent/v1/backtests \
         "symbol": "BTC/USDT",
         "timeframe": "1D",
         "start_date": "2024-01-01",
-        "end_date": "2024-03-31"
+        "end_date": "2024-03-31",
+        "strictMode": true
       }'
 ```
 
@@ -116,6 +117,9 @@ curl -s "http://localhost:8888/api/agent/v1/jobs/<job_id>" \
 ```
 
 When `status` becomes `succeeded`, the backtest result is in `result`.
+
+Set `"strictMode": true` (default) for live-aligned next-bar-open execution;
+`false` uses the aggressive MTF/bar path (matches the IDE non-strict toggle).
 
 The `Idempotency-Key` header makes retries safe: the second call with the
 same key returns the original job instead of submitting a duplicate.
@@ -144,6 +148,15 @@ signals — those shapes will fail validation in `_simulate_trading`.
 |-------|------------------|-------------|
 | 2-way (recommended) | `df['buy']`, `df['sell']` (boolean Series) | Most strategies — simple long-only or `trade_direction='both'` |
 | 4-way (advanced) | `df['open_long']`, `df['close_long']`, `df['open_short']`, `df['close_short']` (boolean Series) | When you need explicit control over each leg |
+
+**`trade_direction='both'` mapping (must match backtest):**
+
+| Column | Meaning at execution |
+|--------|----------------------|
+| `buy=True` | `open_long`; close short first if short |
+| `sell=True` | `open_short`; close long first if long |
+
+Do **not** assume `buy` is an independent `close_short` signal. Merging short tp/sl into `buy` means flip-long under `both`. See `docs/STRATEGY_DEV_GUIDE.md` §3.3.1 and §11.7 (avoid duplicate indicator exits + `trailingEnabled`).
 
 Minimal working SMA crossover:
 
@@ -202,7 +215,40 @@ client doesn't need a separate code path.
 
 ---
 
-## 5. Strategies (class R / W)
+## 5. Indicators (class R / W)
+
+Agents author indicators as **Python scripts**, not via the human SSE
+`aiGenerate` endpoint. Start with the authoring contract:
+
+```bash
+curl -s http://localhost:8888/api/agent/v1/indicators/authoring-contract \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Validate without saving (R):
+
+```bash
+curl -s -X POST http://localhost:8888/api/agent/v1/indicators/validate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "code": "df[\"buy\"] = close > open\n..." }'
+```
+
+Save into the tenant library so it appears in the IDE list (W; max 512 KiB):
+
+```bash
+curl -s -X POST http://localhost:8888/api/agent/v1/indicators \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "my-ma-cross", "code": "..." }'
+```
+
+When creating a strategy with embedded `indicator_code`, the Gateway auto-saves
+and links the indicator (`link-config` is also exposed for normalizing configs).
+
+---
+
+## 6. Strategies (class R / W)
 
 ```bash
 # list (R)
@@ -224,7 +270,7 @@ the design doc for the rationale).
 
 ---
 
-## 6. Trading (class T) — paper-only by default
+## 7. Trading (class T) — paper-only by default
 
 A token with `T` is hard-gated:
 
@@ -251,7 +297,7 @@ curl -s -X POST http://localhost:8888/api/agent/v1/quick-trade/kill-switch \
 
 ---
 
-## 7. Audit & revoke (admin)
+## 8. Audit & revoke (admin)
 
 ```bash
 # recent agent calls (this tenant)
@@ -271,11 +317,18 @@ token return `401`.
 
 ---
 
-## 8. MCP integration (optional)
+## 9. MCP integration (optional)
 
 For AI clients that speak MCP (Cursor, Claude-style desktops, cloud agents),
-see [`mcp_server/README.md`](../../mcp_server/README.md) for a thin Python
-server that wraps the read + backtest subset of the Gateway.
+see [`mcp_server/README.md`](../../mcp_server/README.md) for the Python server
+that wraps Read + Workspace write + Backtest tools from the Gateway.
+
+**Not exposed via MCP (by design):** live/paper trading (`quick-trade/*`),
+admin token issuance, and credential vault access. Use REST with appropriately
+scoped tokens when you explicitly need those capabilities.
+
+MCP long-running jobs: use `wait_for_job` or bounded `stream_job_until_done`
+instead of opening raw SSE yourself.
 
 Two transports are supported via `QUANTDINGER_MCP_TRANSPORT`:
 
@@ -286,7 +339,7 @@ Two transports are supported via `QUANTDINGER_MCP_TRANSPORT`:
 
 ---
 
-## 9. Errors
+## 10. Errors
 
 All `/api/agent/v1/...` errors share this envelope:
 

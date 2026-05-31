@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS qd_users (
     chart_templates TEXT DEFAULT '',      -- 用户图表模板 JSON（指标布局/样式）
     timezone VARCHAR(64) DEFAULT '',       -- IANA 时区标识，空表示跟随客户端/浏览器
     token_version INTEGER DEFAULT 1,       -- Token版本号，用于单一客户端登录控制
+    password_changed_at TIMESTAMP,           -- NULL = 仍使用创建时的初始密码，需提示修改
     last_login_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -365,12 +366,36 @@ CREATE TABLE IF NOT EXISTS qd_strategy_trades (
     commission DECIMAL(20,8) DEFAULT 0,
     commission_ccy VARCHAR(20) DEFAULT '',
     profit DECIMAL(20,8) DEFAULT 0,
+    close_reason VARCHAR(64) DEFAULT '',
+    matched_entry_price DECIMAL(20,8) DEFAULT 0,
+    grid_matched_profit DECIMAL(20,8) DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_user_id ON qd_strategy_trades(user_id);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy_id ON qd_strategy_trades(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON qd_strategy_trades(created_at);
+
+-- Grid cell ladder state (P2). Pre-placed limit orders / user-stream driven
+-- fills will land here; today only the scaffolding lives in code (see
+-- app.services.live_trading.grid_cells).
+CREATE TABLE IF NOT EXISTS qd_grid_cells (
+    id SERIAL PRIMARY KEY,
+    strategy_id INTEGER NOT NULL REFERENCES qd_strategies_trading(id) ON DELETE CASCADE,
+    symbol VARCHAR(50) NOT NULL,
+    cell_index INTEGER NOT NULL,
+    lower_price DECIMAL(20,8) NOT NULL,
+    upper_price DECIMAL(20,8) NOT NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'idle',
+    leg_size DECIMAL(20,8) DEFAULT 0,
+    leg_entry_price DECIMAL(20,8) DEFAULT 0,
+    working_order_id VARCHAR(64) DEFAULT '',
+    last_event_ts TIMESTAMP DEFAULT NOW(),
+    extra JSONB DEFAULT '{}'::jsonb,
+    CONSTRAINT uniq_grid_cell UNIQUE(strategy_id, symbol, cell_index)
+);
+CREATE INDEX IF NOT EXISTS idx_grid_cells_strategy ON qd_grid_cells(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_grid_cells_state ON qd_grid_cells(strategy_id, state);
 
 -- =============================================================================
 -- 5. Pending Orders Queue
@@ -950,6 +975,33 @@ BEGIN
 END $$;
 
 -- =============================================================================
+-- 20c. Migration: password_changed_at (initial password reminder)
+-- =============================================================================
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'qd_users' AND column_name = 'password_changed_at'
+    ) THEN
+        ALTER TABLE qd_users ADD COLUMN password_changed_at TIMESTAMP NULL;
+        -- One-time backfill when upgrading old DBs (skip on fresh installs after bootstrap user exists)
+        UPDATE qd_users
+        SET password_changed_at = COALESCE(updated_at, created_at, NOW())
+        WHERE password_changed_at IS NULL;
+        RAISE NOTICE 'Added password_changed_at column to qd_users table (existing users backfilled)';
+    END IF;
+END $$;
+
+-- =============================================================================
+-- 20d. Migration: strategy trade close reason & grid matched PnL (old DBs)
+-- =============================================================================
+
+ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS close_reason VARCHAR(64) DEFAULT '';
+ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS matched_entry_price DECIMAL(20,8) DEFAULT 0;
+ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS grid_matched_profit DECIMAL(20,8) DEFAULT 0;
+
+-- =============================================================================
 -- 21. Indicator Community Tables
 -- =============================================================================
 
@@ -1166,6 +1218,9 @@ CREATE TABLE IF NOT EXISTS qd_agent_paper_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_paper_orders_user ON qd_agent_paper_orders(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_paper_orders_token ON qd_agent_paper_orders(agent_token_id);
+
+-- Jobs created before progress JSONB existed (Agent Gateway v3.1)
+ALTER TABLE qd_agent_jobs ADD COLUMN IF NOT EXISTS progress JSONB;
 
 -- =============================================================================
 -- Completion Notice

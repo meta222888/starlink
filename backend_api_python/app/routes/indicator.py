@@ -340,7 +340,14 @@ def _indicator_hint_to_text(hint_code: str, params: Dict[str, Any] | None = None
     if hint_code == "MISSING_OUTPUT":
         return "缺少 output 字典。" if is_zh else "Missing output dictionary."
     if hint_code == "MISSING_BUY_SELL_COLUMNS":
-        return "缺少 df['buy'] 或 df['sell'] 信号列。" if is_zh else "Missing df['buy'] or df['sell'] signal columns."
+        return (
+            "缺少执行信号列：请提供四路 open_long/close_long/open_short/close_short，"
+            "或两路 buy/sell。"
+            if is_zh
+            else
+            "Missing execution columns: provide four-way open_long/close_long/open_short/close_short "
+            "or two-way buy/sell."
+        )
     if hint_code == "MISSING_DF_COPY":
         return "缺少 df = df.copy()。" if is_zh else "Missing df = df.copy()."
     if hint_code == "MISSING_INDICATOR_NAME":
@@ -538,6 +545,16 @@ def save_indicator():
 
         if not code or not str(code).strip():
             return jsonify({"code": 0, "msg": "code is required", "data": None}), 400
+
+        from app.utils.safe_exec import validate_code_safety
+
+        is_safe_code, unsafe_reason = validate_code_safety(code)
+        if not is_safe_code:
+            return jsonify({
+                "code": 0,
+                "msg": f"Unsafe indicator code: {unsafe_reason}",
+                "data": None,
+            }), 400
 
         # Local dev UX: if name/description not provided, derive from code variables.
         if not name or not description:
@@ -902,6 +919,7 @@ You write production-ready **QuantDinger** indicator scripts: Python that runs i
 - Environment: browser-side Pyodide–style sandbox **or** API verify sandbox: **no network**, no file I/O, no subprocess.
 - **`pd` and `np` are already available.** Do **not** write `import pandas` / `import numpy`. Avoid any `import` unless unavoidable; never import `os`, `sys`, `requests`, `socket`, `subprocess`, `threading`, `sqlite3`, `multiprocessing`, or other I/O/network modules.
 - Do **not** use: `eval`, `exec`, `compile`, `open`, `__import__`, `getattr`/`setattr`/`delattr` on untrusted names, `globals`, `vars`, `dir`, or meta-programming to escape the sandbox. `locals()` is allowed if needed to assemble `output` (backtest/verify allow it); avoid `globals()`.
+- Allowed imports only: `numpy`, `pandas`, `math`, `json`, `datetime`, `time`, `collections`, `functools`, `itertools`, `statistics`, `decimal`, `fractions`, `copy`. **Never** `import operator`.
 - Work **vectorized** with pandas on `df` where possible; avoid O(n) Python loops over every row for core series (rolling/ewm/shift are preferred).
 
 # Series vs ndarray contract (critical — common AI bug source)
@@ -940,20 +958,25 @@ Self-check before returning code: every place where you call `.rolling` / `.fill
 
 # Backtest contract (strict)
 
-The backtest engine reads **boolean** columns on `df`:
+**Preferred (platform default): four-way execution columns**
 
-- `df['buy']` — True on bars where a **new** long entry signal is allowed (edge-triggered).
-- `df['sell']` — True on bars where a **new** exit / short entry signal is allowed (per product semantics).
+- `df['open_long']`, `df['close_long']`, `df['open_short']`, `df['close_short']` — all bool, length `len(df)`.
+- Use an `edge(s)` helper: `s & ~s.shift(1).fillna(False)` on each raw condition.
+- On trend flip bars you MAY set both `close_*` and opposing `open_*` true (flip_mode R2); for tp/sl-only exits use `close_*` alone without mixing tp/sl into `buy`/`sell`.
+- Declare contract header comments: `# signal_form: four_way`, `# exit_owner: engine|indicator`, `# flip_mode: R1|R2`.
+- See `docs/SIGNAL_EXECUTION_STANDARD_CN.md`.
 
-Rules:
+**Legacy two-way** (simple crossover only):
+
+- `df['buy']` / `df['sell']` — edge-triggered; `tradeDirection both` maps buy→open long (flip short first), sell→open short (flip long first). Do **not** use buy/sell for “close only” exits when `both` — use four-way `close_*`.
+
+Rules (both forms):
 
 - Same **index and length** as `df`; dtype boolean (use `.astype(bool)` after fillna).
-- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars:
-  - `raw_buy = (...condition...)`
-  - `buy = raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))`
-  - Same pattern for `raw_sell` / `sell`.
-- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead (e.g. do not use the same bar’s `high` to validate a signal that assumes you bought at that bar’s `open` unless the user clearly wants that research mode).
+- **Edge-trigger (mandatory)** unless the user explicitly asks for repeated signals on consecutive bars.
+- Signals represent **confirmation on bar close**; the engine fills on the **next bar open** (live-like). Do not implement intrabar lookahead unless the user clearly wants research mode.
 - Fill NaN from indicators before comparisons; replace division-by-zero (`replace(0, np.nan)` then fill).
+- If you use four-way columns, you do **not** need `df['buy']`/`df['sell']` unless `output['signals']` chart markers require them (markers can use open_long/open_short only).
 
 # Chart output: `output` dict (strict)
 
@@ -1001,11 +1024,13 @@ Place **after** name/description lines, **one key per line**, no extra prose on 
 
 Supported keys (parser-enforced):
 
-- `stopLossPct`, `takeProfitPct`: float **0–1** (e.g. `0.03` = 3% on margin PnL semantics as used by the engine).
-- `entryPct`: float **0.01–1.0** (fraction of capital).
+- `stopLossPct`, `takeProfitPct`: float **0–1** = **underlying price move** (e.g. `0.03` = 3% adverse price move; `0.001` = 0.1%). **Not** margin PnL; **do not** divide by leverage.
+- `entryPct`: float **0.01–1.0** = fraction of capital (`1` = 100%, `0.25` = 25%).
 - `trailingEnabled`: `true` or `false`.
-- `trailingStopPct`, `trailingActivationPct`: float **0–1**.
+- `trailingStopPct`, `trailingActivationPct`: float **0–1** = price retracement / activation thresholds (same basis as stop/take-profit).
 - `tradeDirection`: exactly `long`, `short`, or `both`.
+
+**`tradeDirection both` execution semantics:** `df['buy']` → open long (close short first if short); `df['sell']` → open short (close long first if long). Do not document `buy` as a separate close-short column. If the strategy uses in-code tp/sl on `high`/`low` touches, prefer **not** also setting `trailingEnabled true` unless the user explicitly wants engine trailing — see `docs/STRATEGY_DEV_GUIDE.md`.
 
 **Do not** put `leverage` in `@strategy`; users set leverage in the IDE backtest panel.
 
@@ -1035,58 +1060,21 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
 """
 
     def _template_code() -> str:
-        # Fallback template that follows the project expectations.
-        header = (
-            f"my_indicator_name = \"Custom Indicator\"\n"
-            f"my_indicator_description = \"{(prompt or '').replace('\n', ' ')[:200]}\"\n\n"
-        )
-        body = (
-            "# ===== Strategy defaults (single source of truth) =====\n"
-            "# @strategy stopLossPct 0.03            # Hard stop-loss (3%)\n"
-            "# @strategy takeProfitPct 0.06          # Take-profit (6%)\n"
-            "# @strategy entryPct 1.0                # Use 100% of available capital per entry\n"
-            "# @strategy trailingEnabled false       # Set true to enable trailing stop\n"
-            "# @strategy trailingStopPct 0.02        # Trailing distance (2%)\n"
-            "# @strategy trailingActivationPct 0.03  # Activate trailing after +3% in profit\n"
-            "# @strategy tradeDirection long         # long | short | both\n\n"
-            "# ===== Indicator parameters =====\n"
-            "# @param rsi_len int 14 RSI period\n\n"
-            "rsi_len = params.get('rsi_len', 14)\n"
-            "df = df.copy()\n\n"
-            "# Example: robust RSI with edge-triggered buy/sell (no position management, no TP/SL on chart)\n"
-            "delta = df['close'].diff()\n"
-            "gain = delta.clip(lower=0)\n"
-            "loss = (-delta).clip(lower=0)\n"
-            "# Wilder-style smoothing (stable and avoids early NaN explosion)\n"
-            "avg_gain = gain.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "avg_loss = loss.ewm(alpha=1/rsi_len, adjust=False).mean()\n"
-            "rs = avg_gain / avg_loss.replace(0, np.nan)\n"
-            "rsi = 100 - (100 / (1 + rs))\n"
-            "rsi = rsi.fillna(50)\n\n"
-            "# Raw conditions (avoid overly strict filters)\n"
-            "raw_buy = (rsi < 30)\n"
-            "raw_sell = (rsi > 70)\n"
-            "# One-shot signals\n"
-            "buy = (raw_buy.fillna(False) & (~raw_buy.shift(1).fillna(False))).astype(bool)\n"
-            "sell = (raw_sell.fillna(False) & (~raw_sell.shift(1).fillna(False))).astype(bool)\n"
-            "df['buy'] = buy\n"
-            "df['sell'] = sell\n\n"
-            "buy_marks = [df['low'].iloc[i] * 0.995 if bool(df['buy'].iloc[i]) else None for i in range(len(df))]\n"
-            "sell_marks = [df['high'].iloc[i] * 1.005 if bool(df['sell'].iloc[i]) else None for i in range(len(df))]\n\n"
-            "output = {\n"
-            "  'name': my_indicator_name,\n"
-            "  'plots': [\n"
-            "    {'name': 'RSI(14)', 'data': rsi.tolist(), 'color': '#faad14', 'overlay': False}\n"
-            "  ],\n"
-            "  'signals': [\n"
-            "    {'type': 'buy', 'text': 'B', 'data': buy_marks, 'color': '#00E676'},\n"
-            "    {'type': 'sell', 'text': 'S', 'data': sell_marks, 'color': '#FF5252'}\n"
-            "  ]\n"
-            "}\n"
+        from app.services.indicator_default_template import build_default_indicator_template
+
+        desc = (prompt or "").replace("\n", " ")[:200]
+        if not desc:
+            desc = (
+                "双均线四路信号模板：边缘触发 + 引擎风控。"
+                "详见 SIGNAL_EXECUTION_STANDARD_CN.md"
+            )
+        code = build_default_indicator_template(
+            name="Custom Indicator",
+            description=desc,
         )
         if existing:
-            header = "# Existing code was provided as context.\n" + header
-        return header + body
+            code = "# Existing code was provided as context.\n" + code
+        return code
 
     def _generate_code_via_llm() -> str:
         """Use unified LLMService to support all configured providers (OpenRouter, OpenAI, Grok, etc.)."""
@@ -1115,7 +1103,7 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
                 + existing.strip()
                 + "\n```\n\n# Change request:\n\n"
                 + prompt
-                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), df['buy']/df['sell'], output dict, list lengths == len(df)). "
+                + "\n\nReturn one full replacement script: same QuantDinger rules (my_indicator_name/description, df = df.copy(), declared @param values must be read via params.get(...), four-way OR buy/sell execution columns, output dict, list lengths == len(df)). "
                 "Python only — no markdown, no prose outside the code."
             )
 
@@ -1365,6 +1353,32 @@ Return **only** valid Python source: **no** markdown fences, **no** ` ``` `, **n
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@indicator_bp.route("/defaultTemplate", methods=["GET"])
+@login_required
+def get_default_indicator_template():
+    """
+    Return the platform default indicator starter (four-way, contract v1).
+
+    GET /api/indicator/defaultTemplate
+    Optional query: name=...&description=...
+    """
+    from app.services.indicator_default_template import build_default_indicator_template
+
+    args = request.args or {}
+    name = (args.get("name") or "").strip() or "策略模板（四路信号）"
+    description = (args.get("description") or "").strip() or (
+        "双均线金叉/死叉：四路显式信号 + 边缘触发 + 引擎风控。"
+    )
+    code = build_default_indicator_template(name=name, description=description)
+    return jsonify(
+        {
+            "code": 1,
+            "msg": "success",
+            "data": {"code": code, "name": name, "description": description},
+        }
     )
 
 

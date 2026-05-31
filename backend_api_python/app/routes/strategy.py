@@ -414,6 +414,11 @@ def run_strategy_backtest():
 
         svc = get_backtest_service()
         result = svc.run_strategy_snapshot(snapshot, start_date=start_date, end_date=end_date)
+        ea = dict(result.get('executionAssumptions') or {})
+        ea['commission'] = round(float(snapshot.get('commission') or 0), 6)
+        ea['slippage'] = round(float(snapshot.get('slippage') or 0), 6)
+        ea['strictMode'] = bool(snapshot.get('strict_mode', True))
+        result['executionAssumptions'] = ea
         run_id = svc.persist_run(
             user_id=user_id,
             indicator_id=snapshot.get('indicator_id'),
@@ -777,12 +782,23 @@ def get_trades():
         market_type = str(trading_config.get("market_type") or st.get("market_type") or "swap").strip().lower()
         if is_derivatives_market(market_type):
             market_type = "swap"
+        from app.services.live_trading.records import ensure_strategy_trades_close_reason_column
+        ensure_strategy_trades_close_reason_column()
+
+        bot_type = str(trading_config.get("bot_type") or "").strip().lower()
+        lang = str(request.args.get("lang") or request.headers.get("Accept-Language") or "zh")[:2].lower()
+        if not lang.startswith("zh"):
+            lang = "en"
+        else:
+            lang = "zh"
         
         with get_db_connection() as db:
             cur = db.cursor()
             cur.execute(
                 """
-                SELECT id, strategy_id, symbol, type, price, amount, value, commission, commission_ccy, profit, created_at
+                SELECT id, strategy_id, symbol, type, price, amount, value,
+                       commission, commission_ccy, profit, close_reason,
+                       matched_entry_price, grid_matched_profit, created_at
                 FROM qd_strategy_trades
                 WHERE strategy_id = ?
                 ORDER BY id DESC
@@ -815,6 +831,8 @@ def get_trades():
                         trade['created_at'] = int(dt.timestamp())
                     except Exception:
                         pass
+            from app.utils.trade_close_reason import enrich_trade_row
+            trade = enrich_trade_row(trade, bot_type=bot_type, lang=lang)
             processed_rows.append(_normalize_trade_row_for_api(trade, leverage=leverage, market_type=market_type))
         
         # Frontend expects data.trades; keep data.items for compatibility with list-style components.
@@ -904,6 +922,28 @@ def get_positions():
             )
             rows = cur.fetchall() or []
             cur.close()
+
+        if not rows:
+            try:
+                from app.services.live_trading.records import rebuild_positions_from_trades
+
+                if rebuild_positions_from_trades(strategy_id):
+                    with get_db_connection() as db:
+                        cur = db.cursor()
+                        cur.execute(
+                            """
+                            SELECT id, strategy_id, symbol, side, size, entry_price, current_price, highest_price,
+                                   unrealized_pnl, pnl_percent, equity, updated_at
+                            FROM qd_strategy_positions
+                            WHERE strategy_id = ?
+                            ORDER BY id DESC
+                            """,
+                            (strategy_id,),
+                        )
+                        rows = cur.fetchall() or []
+                        cur.close()
+            except Exception as e:
+                logger.warning("rebuild_positions_from_trades failed for strategy %s: %s", strategy_id, e)
 
         # Sync current price and PnL on read (frontend polls every few seconds).
         now = int(time.time())

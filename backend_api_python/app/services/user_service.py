@@ -55,6 +55,8 @@ def _seed_default_watchlist(db, user_id: int):
 
 class UserService:
     """User management service"""
+
+    _password_changed_column_ready = False
     
     # Available roles (ordered by privilege level)
     ROLES = ['viewer', 'user', 'manager', 'admin']
@@ -67,6 +69,105 @@ class UserService:
         'admin': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings', 'user_manage', 'credentials'],
     }
     
+    def ensure_password_changed_column(self) -> None:
+        """Add password_changed_at if missing (idempotent)."""
+        if UserService._password_changed_column_ready:
+            return
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'qd_users' AND column_name = 'password_changed_at'
+                    """
+                )
+                if not cur.fetchone():
+                    cur.execute(
+                        "ALTER TABLE qd_users ADD COLUMN password_changed_at TIMESTAMP NULL"
+                    )
+                    # Existing accounts: assume they already passed initial setup.
+                    cur.execute(
+                        """
+                        UPDATE qd_users
+                        SET password_changed_at = COALESCE(updated_at, created_at, NOW())
+                        WHERE password_changed_at IS NULL
+                        """
+                    )
+                    db.commit()
+                    logger.info("Added password_changed_at column to qd_users (existing rows backfilled)")
+                cur.close()
+            UserService._password_changed_column_ready = True
+        except Exception as e:
+            logger.warning(f"ensure_password_changed_column failed: {e}")
+
+    def mark_password_changed(self, user_id: int) -> None:
+        """Record that the user has set a non-initial password."""
+        self.ensure_password_changed_column()
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    UPDATE qd_users
+                    SET password_changed_at = NOW(), updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (user_id,),
+                )
+                db.commit()
+                cur.close()
+        except Exception as e:
+            logger.warning(f"mark_password_changed failed for user {user_id}: {e}")
+
+    def get_first_user_id(self) -> Optional[int]:
+        """Return the lowest user id (bootstrap / first account created on install)."""
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute("SELECT MIN(id) AS id FROM qd_users")
+                row = cur.fetchone()
+                cur.close()
+            if not row or row.get('id') is None:
+                return None
+            return int(row['id'])
+        except Exception as e:
+            logger.warning(f"get_first_user_id failed: {e}")
+            return None
+
+    def must_change_initial_password(self, user_id: int) -> bool:
+        """
+        True only for the first user (id = MIN(qd_users.id)) when they still use
+        the bootstrap password from deployment. Other admins are never prompted.
+        Code-login users without a password are excluded.
+        """
+        first_id = self.get_first_user_id()
+        if first_id is None or int(user_id) != first_id:
+            return False
+
+        self.ensure_password_changed_column()
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT password_hash, password_changed_at
+                    FROM qd_users WHERE id = ?
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                cur.close()
+            if not row:
+                return False
+            password_hash = str(row.get('password_hash') or '').strip()
+            if not password_hash:
+                return False
+            return row.get('password_changed_at') is None
+        except Exception as e:
+            logger.warning(f"must_change_initial_password failed for user {user_id}: {e}")
+            return False
+
     def hash_password(self, password: str) -> str:
         """Hash password using bcrypt (preferred) or SHA256 (fallback)"""
         if HAS_BCRYPT:
@@ -492,11 +593,16 @@ class UserService:
         password_hash = self.hash_password(new_password)
         
         try:
+            self.ensure_password_changed_column()
             with get_db_connection() as db:
                 cur = db.cursor()
                 cur.execute(
-                    "UPDATE qd_users SET password_hash = ?, updated_at = NOW() WHERE id = ?",
-                    (password_hash, user_id)
+                    """
+                    UPDATE qd_users
+                    SET password_hash = ?, password_changed_at = NOW(), updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    (password_hash, user_id),
                 )
                 db.commit()
                 cur.close()
@@ -664,6 +770,7 @@ class UserService:
         Ensure at least one admin user exists.
         Creates admin using ADMIN_USER/ADMIN_PASSWORD from env if no users exist.
         """
+        self.ensure_password_changed_column()
         try:
             with get_db_connection() as db:
                 cur = db.cursor()
@@ -673,8 +780,9 @@ class UserService:
                 
                 if count == 0:
                     # Create admin using env credentials
-                    admin_user = os.getenv('ADMIN_USER', 'admin')
-                    admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
+                    from app.config.settings import Config
+                    admin_user = os.getenv('ADMIN_USER', Config.ADMIN_USER)
+                    admin_password = os.getenv('ADMIN_PASSWORD', Config.ADMIN_PASSWORD)
                     admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
                     self.create_user({
