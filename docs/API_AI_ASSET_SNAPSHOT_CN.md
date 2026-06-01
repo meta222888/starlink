@@ -322,7 +322,7 @@ curl -sS "https://your-host/api/global-market/ai-asset-analysis/snapshot" \
 
 1. **行情凭据**：至少配置一种市场数据 Key（如 `FINNHUB_API_KEY`、`TWELVE_DATA_API_KEY`、`TIINGO_API_KEY` 等），否则返回 **503**。
 2. **Agent Token**：前缀 `qd_agent_`，且 scopes 含 **`R`**；可选 `markets` 白名单限制可见市场。
-3. **`cn_value_picks`**：A 股 PE 走东方财富 **`push2delay.eastmoney.com`** clist（`EASTMONEY_CLIST_HOST` / `EASTMONEY_UT`）；股息率仍用 AkShare `stock_fhps_em`。海外机房一般无需国内跳板即可拉 PE。可选环境变量见 `backend_api_python/env.example`：
+3. **`cn_value_picks`**：A 股 PE 走东方财富 **`push2delay.eastmoney.com`** clist（`EASTMONEY_CLIST_HOST` / `EASTMONEY_UT`）；股息率仍用 AkShare `stock_fhps_em`。PE 请求**不走** `CN_DATA_PROXY_URL`（该代理常导致 clist 502）。海外机房一般无需国内跳板即可拉 PE。服务器自检：`python3 scripts/diagnose_cn_value_picks.py`。可选环境变量见 `backend_api_python/env.example`：
    - `CN_VALUE_PICKS_MAX_PE`（默认 25）
    - `CN_VALUE_PICKS_MIN_DIVIDEND_PCT`（默认 2.0）
    - `CN_VALUE_PICKS_TOP_N`（默认 20）
