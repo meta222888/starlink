@@ -61,10 +61,7 @@ from app.data_providers.sentiment import (
 from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
 from app.data_providers.news import fetch_financial_news, get_economic_calendar
 from app.data_providers.heatmap import generate_heatmap_data
-from app.data_providers.cn_value_picks import (
-    CN_VALUE_PICKS_CACHE_KEY,
-    compute_cn_value_picks_list,
-)
+from app.data_providers.cn_value_picks import get_cn_value_picks_for_snapshot
 from app.data_providers.opportunities import (
     analyze_opportunities_crypto, analyze_opportunities_stocks,
     analyze_opportunities_local_stocks, analyze_opportunities_forex,
@@ -465,11 +462,7 @@ def ai_asset_analysis_snapshot():
                 get_economic_calendar,
                 force=force,
             ) or [],
-            "cn_value_picks": cached_or_compute(
-                CN_VALUE_PICKS_CACHE_KEY,
-                compute_cn_value_picks_list,
-                force=force,
-            ) or [],
+            "cn_value_picks": get_cn_value_picks_for_snapshot(force=force) or [],
             "timestamp": int(time.time()),
         }
         return jsonify({"code": 1, "msg": "success", "data": payload})

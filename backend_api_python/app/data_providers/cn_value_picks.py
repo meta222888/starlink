@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 CN_VALUE_PICKS_CACHE_KEY = "ai_asset_snapshot_cn_value_picks"
 CN_VALUE_PICKS_TTL_SEC = 864000  # 10 days
+CN_VALUE_PICKS_EMPTY_TTL_SEC = 600  # failed/empty — retry sooner, do not lock in 10d empty
 
 _DEFAULT_MAX_PE = 25.0
 _DEFAULT_MIN_DIVIDEND_PCT = 2.0
@@ -57,14 +58,20 @@ def _is_excluded_name(name: str) -> bool:
 
 
 def _fhps_report_dates() -> List[str]:
-    """Recent Eastmoney dividend report periods (YYYYMMDD)."""
+    """Recent Eastmoney dividend report periods (YYYYMMDD).
+
+    Prefer already-published periods (prior year annual first) — future
+    ``YYYY1231`` often returns empty when called mid-year.
+    """
     year = datetime.now().year
+    month = datetime.now().month
     candidates = [
-        f"{year}1231",
-        f"{year}0630",
         f"{year - 1}1231",
         f"{year - 1}0630",
     ]
+    if month >= 7:
+        candidates.insert(0, f"{year}0630")
+    candidates.append(f"{year}1231")
     out: List[str] = []
     seen = set()
     for d in candidates:
@@ -259,3 +266,28 @@ def compute_cn_value_picks_list() -> List[Dict[str, Any]]:
     block = compute_cn_value_picks()
     picks = block.get("picks")
     return picks if isinstance(picks, list) else []
+
+
+def get_cn_value_picks_for_snapshot(*, force: bool = False) -> List[Dict[str, Any]]:
+    """Cached picks for snapshot: success → 10d TTL; empty/failed → 10min TTL."""
+    from app.data_providers import get_cached, set_cached
+
+    if not force:
+        cached = get_cached(CN_VALUE_PICKS_CACHE_KEY)
+        if isinstance(cached, list) and len(cached) > 0:
+            return cached
+
+    block = compute_cn_value_picks()
+    picks = block.get("picks") if isinstance(block.get("picks"), list) else []
+    ttl = CN_VALUE_PICKS_TTL_SEC if picks else CN_VALUE_PICKS_EMPTY_TTL_SEC
+    set_cached(CN_VALUE_PICKS_CACHE_KEY, picks, ttl)
+    if not picks:
+        logger.warning(
+            "cn_value_picks: snapshot returning empty (spot/div merge or filters); "
+            "source=%s candidates=%s criteria=%s — retry in %ss or use ?force=1",
+            block.get("source"),
+            block.get("candidate_count"),
+            block.get("criteria"),
+            ttl,
+        )
+    return picks

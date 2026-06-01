@@ -7,10 +7,7 @@ from app.data.market_symbols_seed import (
 )
 from app.data_providers import cached_or_compute
 from app.data_providers.heatmap import generate_heatmap_data
-from app.data_providers.cn_value_picks import (
-    CN_VALUE_PICKS_CACHE_KEY,
-    compute_cn_value_picks_list,
-)
+from app.data_providers.cn_value_picks import get_cn_value_picks_for_snapshot
 from app.data_providers.news import get_economic_calendar
 from app.services.kline import KlineService
 from app.routes.global_market import (
@@ -247,11 +244,7 @@ def ai_asset_snapshot():
             force=force,
         ) or [],
         "cn_value_picks": (
-            cached_or_compute(
-                CN_VALUE_PICKS_CACHE_KEY,
-                compute_cn_value_picks_list,
-                force=force,
-            )
+            get_cn_value_picks_for_snapshot(force=force)
             if "CNStock" in allowed_markets
             else []
         ),
