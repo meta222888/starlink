@@ -4,13 +4,14 @@ from __future__ import annotations
 import math
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import pandas as pd
 import requests
 
-from app.data_sources.cn_hk_fundamentals import _bypass_proxy, _float_clean
+from app.data_sources.cn_hk_fundamentals import _PROXY_KEYS, _bypass_proxy, _float_clean
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -88,12 +89,36 @@ def _eastmoney_clist_page_size() -> int:
     return _env_int("EASTMONEY_CLIST_PAGE_SIZE", _EASTMONEY_CLIST_PAGE_SIZE)
 
 
+@contextmanager
+def _eastmoney_clist_direct() -> Generator[None, None, None]:
+    """Direct HTTPS to push2delay — do not use CN_DATA_PROXY_URL (relay often breaks clist)."""
+    saved: Dict[str, str] = {}
+    for key in _PROXY_KEYS + ("NO_PROXY", "no_proxy"):
+        if key in os.environ:
+            saved[key] = os.environ.pop(key)
+    try:
+        yield
+    finally:
+        for key in _PROXY_KEYS + ("NO_PROXY", "no_proxy"):
+            os.environ.pop(key, None)
+        for key, val in saved.items():
+            os.environ[key] = val
+
+
 def _pe_from_em_f9(raw: Any) -> Optional[float]:
-    """Dynamic P/E from clist field f9 (fltt=2 → stored as value * 100)."""
+    """Dynamic P/E from clist field f9 (push2delay returns human-readable PE, e.g. 8.5 or -12.3)."""
     val = _float_clean(raw)
     if val is None:
         return None
-    return val / 100.0
+    # Legacy push2/82.push2 sometimes return integer scale (e.g. 367 → 3.67); push2delay does not.
+    if abs(val) >= 100 and abs(val - round(val)) < 1e-6:
+        return val / 100.0
+    return val
+
+
+def _parse_clist_rows(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Parse Eastmoney clist ``data`` block into row dicts."""
+    return _iter_clist_diff(data.get("diff"))
 
 
 def _iter_clist_diff(diff: Any) -> List[Dict[str, Any]]:
@@ -119,7 +144,7 @@ def _fetch_eastmoney_clist_page(*, pn: int, pz: int) -> Dict[str, Any]:
         "fs": _EASTMONEY_CLIST_FS,
         "fields": _EASTMONEY_SPOT_FIELDS,
     }
-    with _bypass_proxy():
+    with _eastmoney_clist_direct():
         resp = requests.get(
             url,
             params=params,
@@ -218,9 +243,53 @@ def _fetch_spot_pe_table_akshare() -> pd.DataFrame:
     slim = df[[code_col, name_col, pe_col]].copy()
     slim.columns = ["code", "name", "pe"]
     slim["code"] = slim["code"].map(_normalize_a_code)
-    slim["pe"] = slim["pe"].map(_float_clean)
+    slim["pe"] = slim["pe"].map(_pe_from_em_f9)
     slim = slim[slim["code"].astype(bool)]
     return slim
+
+
+def _log_pick_pipeline_stats(
+    *,
+    spot: pd.DataFrame,
+    div: pd.DataFrame,
+    merged: pd.DataFrame,
+    candidates: List[Dict[str, Any]],
+    picks: List[Dict[str, Any]],
+    max_pe: float,
+    min_div: float,
+) -> None:
+    """Diagnostic counts for empty-pick debugging (see scripts/diagnose_cn_value_picks.py)."""
+    pe_vals = [_float_clean(c.get("pe_ratio")) for c in candidates]
+    pe_ok = [p for p in pe_vals if p is not None and 0 < p <= max_pe]
+    div_vals = [_float_clean(c.get("dividend_yield_pct")) for c in candidates]
+    div_ok = [d for d in div_vals if d is not None and d >= min_div]
+    logger.info(
+        "cn_value_picks: pipeline spot=%d div=%d merged=%d candidates=%d "
+        "pe_valid=%d pe_pass_max=%.0f div_pass_min=%d picks=%d",
+        len(spot),
+        len(div),
+        len(merged),
+        len(candidates),
+        sum(p is not None and p > 0 for p in pe_vals),
+        max_pe,
+        len(div_ok),
+        len(picks),
+    )
+    if candidates and not picks:
+        sample = candidates[:3]
+        logger.warning(
+            "cn_value_picks: zero picks after filters (max_pe=%s min_div=%s); sample=%s",
+            max_pe,
+            min_div,
+            [
+                {
+                    "symbol": c.get("symbol"),
+                    "pe": c.get("pe_ratio"),
+                    "div": c.get("dividend_yield_pct"),
+                }
+                for c in sample
+            ],
+        )
 
 
 def _fetch_spot_pe_table() -> pd.DataFrame:
@@ -368,7 +437,11 @@ def compute_cn_value_picks() -> Dict[str, Any]:
 
     merged = spot.merge(div, on="code", how="inner", suffixes=("_spot", "_fhps"))
     if merged.empty:
-        logger.warning("cn_value_picks: no overlapping symbols after merge")
+        logger.warning(
+            "cn_value_picks: no overlapping symbols after merge (spot=%d div=%d)",
+            len(spot),
+            len(div),
+        )
         return meta
 
     candidates: List[Dict[str, Any]] = []
@@ -386,6 +459,15 @@ def compute_cn_value_picks() -> Dict[str, Any]:
         max_pe=max_pe,
         min_dividend_pct=min_div,
         top_n=top_n,
+    )
+    _log_pick_pipeline_stats(
+        spot=spot,
+        div=div,
+        merged=merged,
+        candidates=candidates,
+        picks=picks,
+        max_pe=max_pe,
+        min_div=min_div,
     )
     meta["picks"] = picks
     meta["source"] = (
