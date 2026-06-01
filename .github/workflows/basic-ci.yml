@@ -84,14 +84,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Validate docker-compose.yml (build mode)
-        run: docker compose -f docker-compose.yml config -q
+      - name: Validate docker-compose.yml (local build mode)
+        run: |
+          mkdir -p /tmp/startlink-web-stub
+          printf 'FROM nginx:alpine\n' > /tmp/startlink-web-stub/Dockerfile
+          FRONTEND_SRC_PATH=/tmp/startlink-web-stub docker compose -f docker-compose.yml config -q
 
       - name: Validate docker-compose.ghcr.yml (GHCR mode)
         run: docker compose -f docker-compose.ghcr.yml config -q
-
-      - name: Validate docker-compose.yml + build override (merged)
-        run: docker compose -f docker-compose.yml -f docker-compose.build.yml config -q
 
   version-check:
     name: Version Consistency

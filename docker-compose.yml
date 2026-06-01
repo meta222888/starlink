@@ -8,10 +8,9 @@
 #   3. docker-compose up -d --build
 #   4. Open http://localhost:8888
 #
-# Backend is built from local source. Frontend is pulled from GHCR — its source
-# lives in the private QuantDinger-Vue repo, which publishes
-# `ghcr.io/<owner>/quantdinger-frontend` on every `v*` tag. Override the tag
-# or image path via FRONTEND_IMAGE / IMAGE_TAG in a project-root `.env`.
+# Backend and frontend are built from local source (backend_api_python + startlink-web).
+# Set FRONTEND_SRC_PATH in project-root `.env` if the Vue repo is not at ../startlink-web.
+# To use upstream GHCR images instead, use docker-compose.ghcr.yml (no local Vue tree).
 #
 # Note: The container will NOT start if SECRET_KEY is using the default value.
 #       This is a security measure to prevent insecure deployments.
@@ -142,22 +141,14 @@ services:
       retries: 3
 
   # ========================
-  # Frontend (Nginx serving prebuilt SPA)
+  # Frontend (Nginx serving SPA built from startlink-web)
   # ========================
-  # Default behaviour: pull the prebuilt multi-arch image from GHCR.
-  # Local iteration: clone QuantDinger-Vue into `./QuantDinger-Vue/`
-  # (gitignored) and layer the build override on top:
-  #   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
-  # The `build:` block lives in docker-compose.build.yml so users who only
-  # pull never need the `./QuantDinger-Vue/` directory to exist (Compose
-  # validates build context paths eagerly when `build:` is present).
   frontend:
-    # Tag resolution (highest precedence wins):
-    #   FRONTEND_TAG   — per-side override, decouples FE from BE
-    #   IMAGE_TAG      — unified knob, sets both FE and BE (BE only relevant in ghcr.yml)
-    #   latest         — fallback; pin semver in project-root .env (e.g. IMAGE_TAG=3.0.10)
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
-    pull_policy: always
+    image: ${FRONTEND_IMAGE:-quantdinger-frontend:local}
+    pull_policy: build
+    build:
+      context: ${FRONTEND_SRC_PATH:-../startlink-web}
+      dockerfile: Dockerfile
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:

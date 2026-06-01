@@ -1,15 +1,4 @@
-# Override file for local frontend builds (e.g. ../startlink-web).
-# Usage:
-#   export FRONTEND_SRC_PATH=../startlink-web
+# Deprecated: frontend `build:` is now in docker-compose.yml (startlink-web).
+# This file is kept only so old commands still work:
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
-# Or: ./update.sh
-#
-# Without this override, docker-compose.yml pulls ghcr.io/.../quantdinger-frontend
-# and discards local Vue edits on `docker compose pull`.
-
-services:
-  frontend:
-    pull_policy: build
-    build:
-      context: ${FRONTEND_SRC_PATH:-../startlink-web}
-      dockerfile: Dockerfile
+# Prefer: docker compose up -d --build
