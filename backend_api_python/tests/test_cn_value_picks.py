@@ -6,6 +6,7 @@ from app.data_providers.cn_value_picks import (
     score_value_pick,
     _is_excluded_name,
     _normalize_a_code,
+    _pe_from_em_f9,
 )
 
 
@@ -25,6 +26,11 @@ def test_score_value_pick():
     assert score_value_pick(10, 5) > score_value_pick(20, 5)
     assert score_value_pick(10, 5) > score_value_pick(10, 2)
     assert score_value_pick(0, 5) == 0.0
+
+
+def test_pe_from_em_f9_fltt2():
+    assert _pe_from_em_f9(367) == 3.67
+    assert _pe_from_em_f9(None) is None
 
 
 def test_rank_cn_value_candidates_top_n():

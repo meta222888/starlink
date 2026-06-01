@@ -244,7 +244,7 @@ curl -sS "https://your-host/api/global-market/ai-asset-analysis/snapshot" \
 
 ### 6.8 `cn_value_picks[]`（A 股价值精选）
 
-按 **市盈率低 + 股息率高** 从全 A 股筛选，默认取前 **20** 名。数据源：AkShare `stock_zh_a_spot_em`（动态市盈率）+ `stock_fhps_em`（现金分红-股息率）。
+按 **市盈率低 + 股息率高** 从全 A 股筛选，默认取前 **20** 名。数据源：东方财富 `push2delay.eastmoney.com` clist（动态市盈率 f9）+ AkShare `stock_fhps_em`（现金分红-股息率）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -322,7 +322,7 @@ curl -sS "https://your-host/api/global-market/ai-asset-analysis/snapshot" \
 
 1. **行情凭据**：至少配置一种市场数据 Key（如 `FINNHUB_API_KEY`、`TWELVE_DATA_API_KEY`、`TIINGO_API_KEY` 等），否则返回 **503**。
 2. **Agent Token**：前缀 `qd_agent_`，且 scopes 含 **`R`**；可选 `markets` 白名单限制可见市场。
-3. **`cn_value_picks`**：依赖 AkShare 访问东方财富；海外机房需保证网络或 `NO_PROXY` 直连国内源。可选环境变量见 `backend_api_python/env.example`：
+3. **`cn_value_picks`**：A 股 PE 走东方财富 **`push2delay.eastmoney.com`** clist（`EASTMONEY_CLIST_HOST` / `EASTMONEY_UT`）；股息率仍用 AkShare `stock_fhps_em`。海外机房一般无需国内跳板即可拉 PE。可选环境变量见 `backend_api_python/env.example`：
    - `CN_VALUE_PICKS_MAX_PE`（默认 25）
    - `CN_VALUE_PICKS_MIN_DIVIDEND_PCT`（默认 2.0）
    - `CN_VALUE_PICKS_TOP_N`（默认 20）

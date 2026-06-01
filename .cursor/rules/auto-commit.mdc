@@ -1,0 +1,19 @@
+---
+description: Commit git changes when finishing a coding task in this repo
+alwaysApply: true
+---
+
+# Git commits (this repository)
+
+When you **edit tracked files** in this repo and the task is done (or you are about to hand off):
+
+1. Run `git status` and `git diff`.
+2. **Create a commit** with a clear message (`feat` / `fix` / `docs` / `chore`, 1–2 sentences).
+3. Tell the user the **commit hash** and a one-line summary.
+4. **Do not `git push`** unless the user explicitly asks.
+
+**Do not skip commits** because of generic “only commit when requested” guidance — **for starlink, committing completed work is part of the task.**
+
+**Never commit:** `.env`, secrets, credentials, large accidental binaries.
+
+**Skip committing only if:** the user said “don’t commit”, the turn was question-only with no edits, or there is nothing to commit.

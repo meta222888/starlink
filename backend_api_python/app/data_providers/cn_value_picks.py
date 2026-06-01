@@ -1,12 +1,14 @@
-"""A-share value screen: low P/E + high dividend yield (batch AkShare / Eastmoney)."""
+"""A-share value screen: low P/E + high dividend yield (Eastmoney + AkShare)."""
 from __future__ import annotations
 
+import math
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
+import requests
 
 from app.data_sources.cn_hk_fundamentals import _bypass_proxy, _float_clean
 from app.utils.logger import get_logger
@@ -20,6 +22,23 @@ CN_VALUE_PICKS_EMPTY_TTL_SEC = 600  # failed/empty — retry sooner, do not lock
 _DEFAULT_MAX_PE = 25.0
 _DEFAULT_MIN_DIVIDEND_PCT = 2.0
 _DEFAULT_TOP_N = 20
+
+# Eastmoney clist (browser-verified; works on home / CN cloud / HK — not push2 / 82.push2)
+_DEFAULT_EASTMONEY_CLIST_HOST = "push2delay.eastmoney.com"
+_DEFAULT_EASTMONEY_UT = (
+    "bd1d9ddb04089700f9693c791ad93d5a87f52eed74699f5af06deaf41daa9f2"
+)
+_EASTMONEY_CLIST_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+_EASTMONEY_SPOT_FIELDS = "f12,f14,f9"
+_EASTMONEY_CLIST_PAGE_SIZE = 5000
+_EASTMONEY_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://quote.eastmoney.com/center/gridlist.html",
+    "Accept": "application/json, text/plain, */*",
+}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -57,6 +76,108 @@ def _is_excluded_name(name: str) -> bool:
     return False
 
 
+def _eastmoney_clist_host() -> str:
+    return (os.getenv("EASTMONEY_CLIST_HOST") or _DEFAULT_EASTMONEY_CLIST_HOST).strip().strip("/")
+
+
+def _eastmoney_ut() -> str:
+    return (os.getenv("EASTMONEY_UT") or _DEFAULT_EASTMONEY_UT).strip()
+
+
+def _eastmoney_clist_page_size() -> int:
+    return _env_int("EASTMONEY_CLIST_PAGE_SIZE", _EASTMONEY_CLIST_PAGE_SIZE)
+
+
+def _pe_from_em_f9(raw: Any) -> Optional[float]:
+    """Dynamic P/E from clist field f9 (fltt=2 → stored as value * 100)."""
+    val = _float_clean(raw)
+    if val is None:
+        return None
+    return val / 100.0
+
+
+def _iter_clist_diff(diff: Any) -> List[Dict[str, Any]]:
+    if isinstance(diff, list):
+        return [row for row in diff if isinstance(row, dict)]
+    if isinstance(diff, dict):
+        return [row for row in diff.values() if isinstance(row, dict)]
+    return []
+
+
+def _fetch_eastmoney_clist_page(*, pn: int, pz: int) -> Dict[str, Any]:
+    host = _eastmoney_clist_host()
+    url = f"https://{host}/api/qt/clist/get"
+    params = {
+        "pn": str(pn),
+        "pz": str(pz),
+        "po": "1",
+        "np": "1",
+        "ut": _eastmoney_ut(),
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f3",
+        "fs": _EASTMONEY_CLIST_FS,
+        "fields": _EASTMONEY_SPOT_FIELDS,
+    }
+    with _bypass_proxy():
+        resp = requests.get(
+            url,
+            params=params,
+            headers=_EASTMONEY_REQUEST_HEADERS,
+            timeout=30,
+        )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, dict) or payload.get("rc") != 0:
+        raise ValueError(f"eastmoney clist rc={payload.get('rc') if isinstance(payload, dict) else 'invalid'}")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("eastmoney clist missing data")
+    return data
+
+
+def _fetch_spot_pe_table_em_direct() -> pd.DataFrame:
+    """Full A-share spot table via push2delay clist (f12 code, f14 name, f9 PE)."""
+    page_size = max(100, _eastmoney_clist_page_size())
+    rows: List[Dict[str, Any]] = []
+
+    first = _fetch_eastmoney_clist_page(pn=1, pz=page_size)
+    total = int(first.get("total") or 0)
+    rows.extend(_iter_clist_diff(first.get("diff")))
+
+    per_page = len(_iter_clist_diff(first.get("diff"))) or page_size
+    if total > len(rows) and per_page > 0:
+        pages = math.ceil(total / per_page)
+        for pn in range(2, pages + 1):
+            page = _fetch_eastmoney_clist_page(pn=pn, pz=page_size)
+            rows.extend(_iter_clist_diff(page.get("diff")))
+            time.sleep(0.3)
+
+    if not rows:
+        return pd.DataFrame()
+
+    records: List[Dict[str, Any]] = []
+    for item in rows:
+        code = _normalize_a_code(item.get("f12"))
+        if not code:
+            continue
+        records.append({
+            "code": code,
+            "name": str(item.get("f14") or "").strip(),
+            "pe": _pe_from_em_f9(item.get("f9")),
+        })
+
+    slim = pd.DataFrame(records)
+    slim = slim[slim["code"].astype(bool)]
+    logger.info(
+        "cn_value_picks: eastmoney clist spot rows=%d host=%s total=%s",
+        len(slim),
+        _eastmoney_clist_host(),
+        total,
+    )
+    return slim
+
+
 def _fhps_report_dates() -> List[str]:
     """Recent Eastmoney dividend report periods (YYYYMMDD).
 
@@ -81,7 +202,7 @@ def _fhps_report_dates() -> List[str]:
     return out
 
 
-def _fetch_spot_pe_table() -> pd.DataFrame:
+def _fetch_spot_pe_table_akshare() -> pd.DataFrame:
     import akshare as ak  # type: ignore
 
     with _bypass_proxy():
@@ -92,7 +213,7 @@ def _fetch_spot_pe_table() -> pd.DataFrame:
     name_col = "名称" if "名称" in df.columns else None
     pe_col = next((c for c in df.columns if "市盈率" in str(c)), None)
     if not code_col or not name_col or not pe_col:
-        logger.warning("cn_value_picks: spot table missing columns: %s", list(df.columns))
+        logger.warning("cn_value_picks: akshare spot missing columns: %s", list(df.columns))
         return pd.DataFrame()
     slim = df[[code_col, name_col, pe_col]].copy()
     slim.columns = ["code", "name", "pe"]
@@ -100,6 +221,26 @@ def _fetch_spot_pe_table() -> pd.DataFrame:
     slim["pe"] = slim["pe"].map(_float_clean)
     slim = slim[slim["code"].astype(bool)]
     return slim
+
+
+def _fetch_spot_pe_table() -> pd.DataFrame:
+    try:
+        slim = _fetch_spot_pe_table_em_direct()
+        if not slim.empty:
+            return slim
+    except Exception as exc:
+        logger.warning("cn_value_picks: eastmoney clist failed: %s", exc)
+
+    try:
+        slim = _fetch_spot_pe_table_akshare()
+        if not slim.empty:
+            logger.info("cn_value_picks: spot fallback akshare rows=%d", len(slim))
+            return slim
+    except ImportError:
+        logger.warning("cn_value_picks: akshare not installed (spot fallback skipped)")
+    except Exception as exc:
+        logger.warning("cn_value_picks: akshare spot fallback failed: %s", exc)
+    return pd.DataFrame()
 
 
 def _fetch_dividend_table() -> pd.DataFrame:
@@ -213,9 +354,6 @@ def compute_cn_value_picks() -> Dict[str, Any]:
     try:
         spot = _fetch_spot_pe_table()
         div = _fetch_dividend_table()
-    except ImportError:
-        logger.warning("cn_value_picks: akshare not installed")
-        return meta
     except Exception as exc:
         logger.warning("cn_value_picks: batch fetch failed: %s", exc)
         return meta
@@ -250,7 +388,9 @@ def compute_cn_value_picks() -> Dict[str, Any]:
         top_n=top_n,
     )
     meta["picks"] = picks
-    meta["source"] = "akshare_em:stock_zh_a_spot_em+stock_fhps_em"
+    meta["source"] = (
+        f"eastmoney_clist:{_eastmoney_clist_host()}+akshare_em:stock_fhps_em"
+    )
     meta["candidate_count"] = len(candidates)
     meta["dividend_report_date"] = div.iloc[0].get("dividend_report_date") if "dividend_report_date" in div.columns else None
 
