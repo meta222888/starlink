@@ -39,6 +39,8 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 # to avoid unnecessary round-trips through overseas proxies.
 _CN_FINANCIAL_DOMAINS = ",".join([
     ".eastmoney.com",
+    "push2delay.eastmoney.com",
+    "push2.eastmoney.com",
     ".sina.com.cn",
     ".sinajs.cn",
     ".10jqka.com.cn",

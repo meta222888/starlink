@@ -91,18 +91,32 @@ def _eastmoney_clist_page_size() -> int:
 
 @contextmanager
 def _eastmoney_clist_direct() -> Generator[None, None, None]:
-    """Direct HTTPS to push2delay — do not use CN_DATA_PROXY_URL (relay often breaks clist)."""
+    """Direct HTTPS to push2delay — never via PROXY_URL / CN_DATA_PROXY_URL."""
     saved: Dict[str, str] = {}
-    for key in _PROXY_KEYS + ("NO_PROXY", "no_proxy"):
+    for key in _PROXY_KEYS:
         if key in os.environ:
             saved[key] = os.environ.pop(key)
     try:
         yield
     finally:
-        for key in _PROXY_KEYS + ("NO_PROXY", "no_proxy"):
+        for key in _PROXY_KEYS:
             os.environ.pop(key, None)
         for key, val in saved.items():
             os.environ[key] = val
+
+
+def _eastmoney_http_get(url: str, *, params: Dict[str, str]) -> requests.Response:
+    """HTTP GET with proxies disabled (env NO_PROXY is not enough when trust_env=True)."""
+    with _eastmoney_clist_direct():
+        with requests.Session() as session:
+            session.trust_env = False
+            return session.get(
+                url,
+                params=params,
+                headers=_EASTMONEY_REQUEST_HEADERS,
+                timeout=30,
+                proxies={"http": None, "https": None},
+            )
 
 
 def _pe_from_em_f9(raw: Any) -> Optional[float]:
@@ -144,13 +158,7 @@ def _fetch_eastmoney_clist_page(*, pn: int, pz: int) -> Dict[str, Any]:
         "fs": _EASTMONEY_CLIST_FS,
         "fields": _EASTMONEY_SPOT_FIELDS,
     }
-    with _eastmoney_clist_direct():
-        resp = requests.get(
-            url,
-            params=params,
-            headers=_EASTMONEY_REQUEST_HEADERS,
-            timeout=30,
-        )
+    resp = _eastmoney_http_get(url, params=params)
     resp.raise_for_status()
     payload = resp.json()
     if not isinstance(payload, dict) or payload.get("rc") != 0:
@@ -490,9 +498,18 @@ def compute_cn_value_picks_list() -> List[Dict[str, Any]]:
     return picks if isinstance(picks, list) else []
 
 
+def _clear_cn_value_picks_cache() -> None:
+    from app.utils.cache import CacheManager
+
+    CacheManager().delete(f"dp:{CN_VALUE_PICKS_CACHE_KEY}")
+
+
 def get_cn_value_picks_for_snapshot(*, force: bool = False) -> List[Dict[str, Any]]:
     """Cached picks for snapshot: success → 10d TTL; empty/failed → 10min TTL."""
     from app.data_providers import get_cached, set_cached
+
+    if force:
+        _clear_cn_value_picks_cache()
 
     if not force:
         cached = get_cached(CN_VALUE_PICKS_CACHE_KEY)
