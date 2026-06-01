@@ -63,6 +63,8 @@ CACHE_TTL = {
     "market_sentiment": 21600,
     # Opportunity scanner — heavy compute, 1h is the right cadence.
     "trading_opportunities": 3600,
+    # A-share value screen (low P/E + high dividend) — batch AkShare, refresh every 10 days.
+    "ai_asset_snapshot_cn_value_picks": 864000,
 }
 
 _DEFAULT_TTL = 60
