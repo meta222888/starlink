@@ -33,22 +33,50 @@ logger = get_logger(__name__)
 _PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 
 
+def _cn_data_proxy_url() -> str:
+    """Optional China relay (e.g. Squid on df.example.com) for AkShare / Eastmoney."""
+    return (os.getenv("CN_DATA_PROXY_URL") or "").strip()
+
+
 @contextmanager
 def _bypass_proxy() -> Generator[None, None, None]:
     """
-    Temporarily clear proxy env vars so that AkShare / requests talks to
-    Chinese domestic sites (Eastmoney, Sina, etc.) directly, not through
-    an overseas SOCKS proxy.  Restored after the block exits.
+    AkShare / Eastmoney traffic:
+
+    * ``CN_DATA_PROXY_URL`` set → route through China HTTP relay (overseas backend).
+    * otherwise → clear proxy env and connect directly (server must be in CN).
     """
-    saved = {}
-    for key in _PROXY_KEYS:
-        val = os.environ.pop(key, None)
-        if val is not None:
-            saved[key] = val
+    cn_proxy = _cn_data_proxy_url()
+    saved_proxy: Dict[str, str] = {}
+    saved_no_proxy: Dict[str, str] = {}
+
+    if cn_proxy:
+        for key in _PROXY_KEYS:
+            cur = os.environ.get(key)
+            if cur is not None:
+                saved_proxy[key] = cur
+            os.environ[key] = cn_proxy
+        for key in ("NO_PROXY", "no_proxy"):
+            cur = os.environ.get(key)
+            if cur is not None:
+                saved_no_proxy[key] = cur
+            os.environ.pop(key, None)
+    else:
+        for key in _PROXY_KEYS:
+            val = os.environ.pop(key, None)
+            if val is not None:
+                saved_proxy[key] = val
+
     try:
         yield
     finally:
-        for key, val in saved.items():
+        for key in _PROXY_KEYS:
+            os.environ.pop(key, None)
+        for key, val in saved_proxy.items():
+            os.environ[key] = val
+        for key in ("NO_PROXY", "no_proxy"):
+            os.environ.pop(key, None)
+        for key, val in saved_no_proxy.items():
             os.environ[key] = val
 
 _TD_TIMEOUT = 15
