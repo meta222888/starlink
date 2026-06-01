@@ -73,10 +73,11 @@ curl -sS "https://your-host/api/global-market/ai-asset-analysis/snapshot" \
 | `market_overview` | object | 指数 / 外汇 / 加密 / 商品总览 |
 | `market_heatmap` | object | 热力图（美股、港股、加密、行业等） |
 | `economic_calendar` | array | 经济日历（本地生成示例事件） |
-| `cn_value_picks` | array | **A 股价值精选**：低市盈率 + 高股息率 Top20 |
 | `timestamp` | number | **仅登录态接口**返回，响应生成时间（Unix 秒） |
 
-> Agent 接口会按 Token 的 `markets` 白名单过滤 `market_types`、`hot_symbols`、`opportunities`；`CNStock` 未授权时 `cn_value_picks` 为 `[]`。
+> **A 股价值精选（`cn_value_picks`）** 已从本 API 移除（避免拖慢 snapshot）。由 **PC530 站点** 在本地执行 `cn_value_picks.py` 并缓存展示，见 PC530 仓库根目录。
+
+> Agent 接口会按 Token 的 `markets` 白名单过滤 `market_types`、`hot_symbols`、`opportunities`。
 
 ---
 

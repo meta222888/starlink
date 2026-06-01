@@ -210,7 +210,7 @@ CN_DATA_PROXY_URL=https://quantdinger:你的密码@df.belltrip.cn:8443
 
 ```bash
 curl -sS "https://海外域名/api/agent/v1/markets/ai-asset-snapshot?force=1" \
-  -H "Authorization: Bearer TOKEN" | jq '.data.cn_value_picks | length'
+  -H "Authorization: Bearer TOKEN" | jq '.data.market_overview'
 ```
 
 ---
