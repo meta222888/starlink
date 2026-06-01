@@ -1,162 +1,241 @@
-# 国内数据跳板部署指南（df.belltrip.cn）
+# 国内数据跳板（df.belltrip.cn）— Nginx + Certbot + Squid
 
-海外 QuantDinger 无法直连东方财富时，可在**国内 Ubuntu** 上部署 HTTP 正向代理，海外 backend 通过 `CN_DATA_PROXY_URL` 拉取 AkShare / 东财数据。
-
-> 单域名 Nginx 反代只适合腾讯 `qt.gtimg.cn` 这类固定主机；东财有多个子域（`push2.eastmoney.com`、`data.eastmoney.com` 等），必须用 **HTTP 代理（Squid）**。
-
----
-
-## 架构
-
-```text
-海外 QuantDinger ──CN_DATA_PROXY_URL──► df.belltrip.cn:3128 (Squid)
-                                              │
-                                              ▼
-                                        东方财富 / 腾讯等
-```
+海外 backend 通过 **`CN_DATA_PROXY_URL`** 访问 AkShare / 东方财富。  
+东财有多个子域，需 **Squid 正向代理**；Nginx 负责 **证书（Certbot）**，可选把 **HTTPS 代理** 挂在 443 或 8443。
 
 ---
 
-## 一、DNS
+## 一、端口规划（避免和现有网站冲突）
 
-在域名服务商添加：
+| 端口 | 用途 |
+|------|------|
+| **3128** | HTTP 代理（明文，仅内网/调试） |
+| **8443** | **HTTPS 代理（推荐海外用）**，证书 `df.belltrip.cn` |
+| 80 / 443 | 若已有网站占用，**不要**让 Squid 和 Nginx 同时抢 443 |
 
-| 类型 | 主机记录 | 值 |
-|------|----------|-----|
+若 `df.belltrip.cn` **专用于跳板**、无其它站点，可把 HTTPS 代理改为 **443**（下文把 `8443` 换成 `443` 即可）。
+
+---
+
+## 二、DNS
+
+| 类型 | 主机 | 值 |
+|------|------|-----|
 | A | `df` | 国内服务器公网 IP |
 
-验证：`ping df.belltrip.cn`
-
 ---
 
-## 二、国内 Ubuntu 安装 Squid
+## 三、安装 Squid
 
 ```bash
 sudo apt update
 sudo apt install -y squid apache2-utils
 ```
 
-### 1. 创建代理账号
+代理账号：
 
 ```bash
 sudo htpasswd -c /etc/squid/passwd quantdinger
-# 按提示输入密码，记下 USER / PASS
 ```
 
-### 2. 写入配置
+---
+
+## 四、Squid 配置（修复 CONNECT / SSL 错误）
 
 ```bash
 sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.bak
-sudo tee /etc/squid/squid.conf <<'EOF'
+sudo nano /etc/squid/squid.conf
+```
+
+**整文件可替换为：**
+
+```conf
 visible_hostname df.belltrip.cn
 
+# HTTP 代理（本机调试）
 http_port 3128
 
+# HTTPS 代理（Certbot 证书，海外 backend 连这个）
+# 若 8443 无冲突；专机可改为 https_port 443
+https_port 8443 tls-cert=/etc/letsencrypt/live/df.belltrip.cn/fullchain.pem tls-key=/etc/letsencrypt/live/df.belltrip.cn/privkey.pem
+
+# 认证
 auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd
 auth_param basic realm CN-Data-Relay
 acl authenticated proxy_auth REQUIRED
 
+# HTTPS 隧道（缺了会报 curl:56 SSL unexpected eof）
 acl SSL_ports port 443
-acl Safe_ports port 80 443 21 1025-65535
 acl CONNECT method CONNECT
+acl Safe_ports port 80 443 21 1025-65535
 
-acl china_fin dstdomain .eastmoney.com .gtimg.cn .ifzq.gtimg.cn .qq.com .tencent.com .sina.com.cn .sinajs.cn .10jqka.com.cn .cninfo.com.cn .hexun.com .szse.cn .ssec.com.cn
+acl china_fin dstdomain .eastmoney.com .gtimg.cn .ifzq.gtimg.cn .qq.com .tencent.com .sina.com.cn .sinajs.cn .10jqka.com.cn .cninfo.com.cn
 
+# 顺序重要
 http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
+http_access allow authenticated CONNECT SSL_ports
 http_access allow authenticated china_fin
 http_access deny all
 
-access_log /var/log/squid/access.log
-EOF
+access_log /var/log/squid/access.log cache.log /var/log/squid/cache.log
 ```
 
-> 若 AkShare 报其它国内域名失败，把域名后缀追加到 `china_fin` 的 `dstdomain` 列表。
+> Ubuntu 若提示找不到 `basic_ncsa_auth`，执行：  
+> `sudo find /usr -name basic_ncsa_auth 2>/dev/null`  
+> 把路径写进 `auth_param basic program`。
 
-### 3. 初始化并启动
+**不要用 `ssl_bump`**，东财只需 CONNECT 隧道，解密 HTTPS 会导致 EOF。
+
+---
+
+## 五、Certbot 证书（已有 Nginx 时）
+
+### 方式 A：Nginx 只占 80，证书给 Squid 用 8443
+
+```bash
+sudo certbot certonly --nginx -d df.belltrip.cn
+# 或：sudo certbot certonly --webroot -w /var/www/html -d df.belltrip.cn
+```
+
+### 让 Squid 能读证书
+
+```bash
+sudo apt install -y ssl-cert
+sudo usermod -aG ssl-cert proxy
+sudo chmod 755 /etc/letsencrypt/live /etc/letsencrypt/archive
+sudo chgrp ssl-cert /etc/letsencrypt/live/df.belltrip.cn/*.pem
+sudo chmod 640 /etc/letsencrypt/live/df.belltrip.cn/privkey.pem
+```
+
+### Nginx 仅用于续期（可选 `server` 块）
+
+```nginx
+server {
+    listen 80;
+    server_name df.belltrip.cn;
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    location / {
+        return 200 'CN data relay';
+        add_header Content-Type text/plain;
+    }
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+---
+
+## 六、启动 Squid
 
 ```bash
 sudo squid -k parse
-sudo systemctl enable --now squid
+sudo systemctl restart squid
 sudo systemctl status squid
 ```
 
-### 4. 防火墙（仅允许海外 backend IP）
+确认监听：
 
 ```bash
-# 示例：只允许海外机 1.2.3.4 访问 3128
-sudo ufw allow from 1.2.3.4 to any port 3128 proto tcp
-sudo ufw reload
+sudo ss -lntp | grep -E '3128|8443'
 ```
 
 ---
 
-## 三、在国内机自测
+## 七、防火墙 / 安全组
+
+放行（仅海外 backend IP 更佳）：
+
+- **8443**（HTTPS 代理，生产）
+- 3128（可选，调试）
 
 ```bash
-curl -x http://quantdinger:你的密码@127.0.0.1:3128 -sS --max-time 15 \
+sudo ufw allow from 海外BACKEND公网IP to any port 8443 proto tcp
+```
+
+---
+
+## 八、自测（先 HTTP 3128）
+
+```bash
+# 1) 不走代理（应成功）
+curl -sS --max-time 10 "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:0+t:6" | head -c 100
+
+# 2) 走代理 — 必须带 -v 看 CONNECT 是否 200
+curl -v -x http://quantdinger:你的密码@127.0.0.1:3128 \
   "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:0+t:6" \
-  | head -c 200
+  2>&1 | head -40
 ```
 
-有 JSON 返回即 Squid 正常。
+日志里应有：`CONNECT ... 200 Connection established`，然后才有 JSON。
 
----
-
-## 四、在海外 backend 服务器上测试
+若仍 `curl: (56)`：
 
 ```bash
-curl -x http://quantdinger:你的密码@df.belltrip.cn:3128 -sS --max-time 20 \
-  "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:0+t:6" \
-  | head -c 200
+sudo tail -30 /var/log/squid/access.log
+sudo tail -30 /var/log/squid/cache.log
 ```
 
-通过后再配置 QuantDinger。
+常见：`TCP_DENIED/403` → ACL 顺序或密码错；`swap_timeout` → 上游问题。
+
+### HTTPS 代理端口自测（8443）
+
+```bash
+curl -v -x https://quantdinger:你的密码@127.0.0.1:8443 \
+  "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:0+t:6" \
+  2>&1 | head -40
+```
 
 ---
 
-## 五、海外 QuantDinger 配置
+## 九、海外 backend 测试
 
-`backend_api_python/.env`（或 Docker 挂载的 env）增加：
+```bash
+curl -v -x https://quantdinger:你的密码@df.belltrip.cn:8443 \
+  "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:0+t:6" \
+  2>&1 | head -30
+```
+
+`.env`：
 
 ```env
-# 海外访问 Binance / Yahoo 等（若已有可保留）
-# PROXY_URL=socks5h://...
-
-# 仅 AkShare / 东财 / A 股相关走国内跳板
-CN_DATA_PROXY_URL=http://quantdinger:你的密码@df.belltrip.cn:3128
+CN_DATA_PROXY_URL=https://quantdinger:你的密码@df.belltrip.cn:8443
 ```
 
-重启 backend 后：
+密码含 `@#` 等需 URL 编码。重启 backend 后：
 
 ```bash
-curl -sS "https://你的海外域名/api/agent/v1/markets/ai-asset-snapshot?force=1" \
-  -H "Authorization: Bearer YOUR_TOKEN" | jq '.data.cn_value_picks | length'
+curl -sS "https://海外域名/api/agent/v1/markets/ai-asset-snapshot?force=1" \
+  -H "Authorization: Bearer TOKEN" | jq '.data.cn_value_picks | length'
 ```
 
 ---
 
-## 六、安全建议
+## 十、Nginx 与 Squid 分工（总结）
 
-1. **务必开密码**（`htpasswd`），不要裸奔 `3128`。
-2. **防火墙白名单**仅放行海外 backend 公网 IP。
-3. 可选：改用非默认端口，或再加 IP 限速。
-4. `df.belltrip.cn` 仅作代理，不必部署网站证书（HTTP 代理端口 3128 即可）。
-
----
-
-## 七、故障排查
-
-| 现象 | 处理 |
+| 组件 | 作用 |
 |------|------|
-| 海外 curl 超时 | 查国内防火墙 / 安全组是否放行 3128 |
-| `407 Proxy Authentication Required` | 检查用户名密码 |
-| `403` / `DENIED` | Squid `access.log`，补 `china_fin` 域名 |
-| 代理通但 `cn_value_picks` 仍空 | 确认代码已支持 `CN_DATA_PROXY_URL` 并 `git pull` 后重启 |
-| 仍走直连东财 | 未设置 `CN_DATA_PROXY_URL` 或 env 未挂载进容器 |
+| **Certbot + Nginx** | 申请/续期 `df.belltrip.cn` 证书 |
+| **Squid 8443** | TLS 加密的 **正向代理**（海外连这里） |
+| **Squid 3128** | 明文代理，仅调试 |
 
-查看 Squid 日志：
+Nginx **不能**用普通 `proxy_pass https://push2.eastmoney.com` 代替 Squid 反代东财（子域太多）。  
+可选：Nginx `stream {}` 把 443 原样转给 Squid，但不如 Squid 直接 `https_port` 简单。
+
+---
+
+## 十一、续期
 
 ```bash
-sudo tail -f /var/log/squid/access.log
+sudo certbot renew --dry-run
+```
+
+续期后重启 Squid：
+
+```bash
+sudo systemctl restart squid
 ```
