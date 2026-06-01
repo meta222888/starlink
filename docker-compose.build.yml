@@ -1,4 +1,1 @@
-# Deprecated: frontend `build:` is now in docker-compose.yml (startlink-web).
-# This file is kept only so old commands still work:
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
-# Prefer: docker compose up -d --build
+# Deprecated — use docker-compose.frontend-build.yml or scripts/build-frontend.sh

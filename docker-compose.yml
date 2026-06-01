@@ -8,9 +8,10 @@
 #   3. docker-compose up -d --build
 #   4. Open http://localhost:8888
 #
-# Backend and frontend are built from local source (backend_api_python + startlink-web).
-# Set FRONTEND_SRC_PATH in project-root `.env` if the Vue repo is not at ../startlink-web.
-# To use upstream GHCR images instead, use docker-compose.ghcr.yml (no local Vue tree).
+# Backend is built from local source (backend_api_python).
+# Frontend uses a pre-built image (quantdinger-frontend:local) — build via scripts/build-frontend.sh.
+# Set FRONTEND_SRC_PATH in project-root `.env` (default ../startlink-web or /var/www/startlink-web).
+# GHCR prebuilt stack: docker-compose.ghcr.yml
 #
 # Note: The container will NOT start if SECRET_KEY is using the default value.
 #       This is a security measure to prevent insecure deployments.
@@ -144,12 +145,9 @@ services:
   # Frontend (Nginx serving SPA built from startlink-web)
   # ========================
   frontend:
-    # Name and tag are separate (do not put ":local" inside FRONTEND_IMAGE).
+    # Pre-built image only — see scripts/build-frontend.sh (slow npm build is separate).
     image: ${FRONTEND_IMAGE:-quantdinger-frontend}:${FRONTEND_TAG:-local}
-    pull_policy: build
-    build:
-      context: ${FRONTEND_SRC_PATH:-../startlink-web}
-      dockerfile: Dockerfile
+    pull_policy: if_not_present
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:
