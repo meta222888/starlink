@@ -19,36 +19,40 @@ logger = get_logger(__name__)
 # Price fetchers for opportunity scanning
 # ---------------------------------------------------------------------------
 
-def _fetch_yahoo_chart_quote(symbol: str) -> Optional[Dict[str, Any]]:
-    """US spot quote via Yahoo chart API — lighter than yfinance batch calls."""
-    sym = (symbol or "").strip().upper()
-    if not sym:
+from app.data_sources.yahoo_quote import fetch_yahoo_chart_quote, hk_yahoo_symbol
+
+
+def _fetch_yahoo_hk_chart_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """HK spot quote via Yahoo chart API when Tencent qt.gtimg.cn is unreachable."""
+    yf_sym = hk_yahoo_symbol(symbol)
+    if not yf_sym:
+        return None
+    return fetch_yahoo_chart_quote(yf_sym)
+
+
+def _fetch_yfinance_hk_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """HK spot quote via yfinance when Tencent and Yahoo chart both fail."""
+    yf_sym = hk_yahoo_symbol(symbol)
+    if not yf_sym:
         return None
     try:
-        resp = requests.get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-            params={"interval": "1d", "range": "5d"},
-            headers={"User-Agent": "Mozilla/5.0 (compatible; QuantDinger/1.0)"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        result = (resp.json().get("chart") or {}).get("result") or []
-        if not result:
-            return None
-        meta = result[0].get("meta") or {}
-        price = safe_float(meta.get("regularMarketPrice") or meta.get("previousClose"))
-        prev = safe_float(meta.get("chartPreviousClose") or meta.get("previousClose") or price)
-        if price <= 0:
-            return None
-        change_pct = ((price - prev) / prev * 100.0) if prev > 0 else 0.0
-        return {
-            "last": price,
-            "changePercent": round(change_pct, 2),
-            "previousClose": prev,
-        }
+        import yfinance as yf
+
+        ticker = yf.Ticker(yf_sym)
+        hist = ticker.history(period="2d")
+        if len(hist) >= 2:
+            prev = safe_float(hist["Close"].iloc[-2])
+            curr = safe_float(hist["Close"].iloc[-1])
+            if curr > 0 and prev > 0:
+                change_pct = (curr - prev) / prev * 100.0
+                return {"last": curr, "changePercent": round(change_pct, 2), "previousClose": prev}
+        if len(hist) == 1:
+            curr = safe_float(hist["Close"].iloc[-1])
+            if curr > 0:
+                return {"last": curr, "changePercent": 0.0, "previousClose": curr}
     except Exception as e:
-        logger.debug("Yahoo chart quote failed for %s: %s", sym, e)
-        return None
+        logger.debug("yfinance HK quote failed for %s: %s", symbol, e)
+    return None
 
 
 def _fetch_stooq_us_quote(symbol: str) -> Optional[Dict[str, Any]]:
@@ -95,7 +99,7 @@ def _fetch_single_local_stock_quote(market: str, item: Dict[str, Any], *, fast: 
     last = 0.0
     change_pct = 0.0
     if m == "USStock":
-        yahoo = _fetch_yahoo_chart_quote(symbol)
+        yahoo = fetch_yahoo_chart_quote(symbol)
         if yahoo:
             last = safe_float(yahoo.get("last"))
             change_pct = safe_float(yahoo.get("changePercent"))
@@ -104,6 +108,35 @@ def _fetch_single_local_stock_quote(market: str, item: Dict[str, Any], *, fast: 
             if stooq:
                 last = safe_float(stooq.get("last"))
                 change_pct = safe_float(stooq.get("changePercent"))
+        if last <= 0 and not fast:
+            try:
+                from app.services.kline import KlineService
+                row = KlineService().get_realtime_price(m, symbol)
+                last = safe_float(row.get("price"))
+                change_pct = row.get("changePercent")
+                if change_pct is None:
+                    prev_close = safe_float(row.get("previousClose"))
+                    change_pct = ((last - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+            except Exception as e:
+                logger.debug("Kline realtime price failed for %s:%s: %s", m, symbol, e)
+    elif m == "HKStock":
+        yahoo = _fetch_yahoo_hk_chart_quote(symbol)
+        if yahoo:
+            last = safe_float(yahoo.get("last"))
+            change_pct = safe_float(yahoo.get("changePercent"))
+        if last <= 0:
+            source = DataSourceFactory.get_source(m)
+            ticker = source.get_ticker(symbol) or {}
+            last = safe_float(ticker.get("last") or ticker.get("close") or ticker.get("price"))
+            change_pct = ticker.get("changePercent")
+            if change_pct is None:
+                prev_close = safe_float(ticker.get("previousClose"))
+                change_pct = ((last - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+        if last <= 0:
+            yf_row = _fetch_yfinance_hk_quote(symbol)
+            if yf_row:
+                last = safe_float(yf_row.get("last"))
+                change_pct = safe_float(yf_row.get("changePercent"))
         if last <= 0 and not fast:
             try:
                 from app.services.kline import KlineService

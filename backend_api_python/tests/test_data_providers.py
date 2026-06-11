@@ -190,3 +190,71 @@ def test_adanos_sentiment_validates_source():
     assert normalize_source("twitter") == "x"
     with pytest.raises(ValueError):
         normalize_source("unsupported")
+
+
+def test_hk_symbol_to_yahoo():
+    from app.data_sources.yahoo_quote import hk_yahoo_symbol
+
+    assert hk_yahoo_symbol("00700") == "0700.HK"
+    assert hk_yahoo_symbol("700") == "0700.HK"
+    assert hk_yahoo_symbol("0700.HK") == "0700.HK"
+
+
+def test_hk_quote_uses_yahoo_first(monkeypatch):
+    from app.data_providers import opportunities as opp
+
+    monkeypatch.setattr(
+        opp,
+        "_fetch_yahoo_hk_chart_quote",
+        lambda s: {"last": 320.5, "changePercent": 1.25},
+    )
+    monkeypatch.setattr(
+        "app.data_sources.DataSourceFactory.get_source",
+        lambda m: (_ for _ in ()).throw(AssertionError("Tencent should not be called")),
+    )
+    monkeypatch.setattr(
+        "app.services.symbol_name.resolve_symbol_name",
+        lambda m, s: "Tencent",
+    )
+
+    row = opp._fetch_single_local_stock_quote(
+        "HKStock",
+        {"symbol": "00700", "name": "腾讯控股"},
+        fast=True,
+    )
+    assert row is not None
+    assert row["price"] == 320.5
+    assert row["change"] == 1.25
+    assert row["market"] == "HKStock"
+
+
+def test_hk_quote_fallback_to_yfinance_when_yahoo_empty(monkeypatch):
+    from app.data_providers import opportunities as opp
+
+    class FakeSource:
+        def get_ticker(self, symbol):
+            return {"last": 0}
+
+    monkeypatch.setattr(
+        "app.data_sources.DataSourceFactory.get_source",
+        lambda m: FakeSource(),
+    )
+    monkeypatch.setattr(opp, "_fetch_yahoo_hk_chart_quote", lambda s: None)
+    monkeypatch.setattr(
+        opp,
+        "_fetch_yfinance_hk_quote",
+        lambda s: {"last": 88.0, "changePercent": -0.5},
+    )
+    monkeypatch.setattr(
+        "app.services.symbol_name.resolve_symbol_name",
+        lambda m, s: "Alibaba",
+    )
+
+    row = opp._fetch_single_local_stock_quote(
+        "HKStock",
+        {"symbol": "09988", "name": "阿里巴巴-W"},
+        fast=True,
+    )
+    assert row is not None
+    assert row["price"] == 88.0
+    assert row["change"] == -0.5
